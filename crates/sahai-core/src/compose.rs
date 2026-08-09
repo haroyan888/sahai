@@ -126,15 +126,24 @@ pub struct ContainerDiff {
     pub kept: Vec<String>,
 }
 
-/// compose定義から各サービスの`ports:`を取り除いたYAMLを返す。
+/// 差配が一元管理するため、利用者の記述を使わないcomposeのキー。
 ///
-/// ホスト側ポートの公開は差配が一元管理するため、利用者が書いた公開設定は使わない。
-/// overrideでの上書きでは打ち消せない: docker composeは`ports`を置き換えではなく
-/// **合算**するので、両方が公開されてしまう(`image:`はスカラーなので置き換えになり、
-/// overrideで無効化できるのとは事情が違う)。そのためbase側の記述自体を落とす。
+/// どちらもdocker composeが置き換えではなく**合算**するキーであり、overrideでの
+/// 上書きでは打ち消せない(`image:`はスカラーなので置き換えになり、overrideで
+/// 無効化できるのとは事情が違う)。そのためbase側の記述自体を落とす。
 ///
-/// `volumes:`はマウント先(target)単位でマージされ差配の設定が勝つため、除去しない。
-pub fn strip_published_ports(compose_content: &str) -> Result<String, CoreError> {
+/// - `ports`: 利用者の公開設定が残ると意図しないポートがホストに開く。
+///   衝突検証はDBを見るだけなので、この経路で開いたポートはすり抜ける
+/// - `env_file`: 参照先は利用者のプロジェクト内の相対パスであることが多いが、
+///   起動時のカレントにはbase.yml・override.yml・`.env`しか無く、存在しない
+///   ファイルを指したまま起動しようとして失敗する
+///
+/// `volumes`は含めない。マウント先(target)単位でマージされ差配の設定が勝つため、
+/// 利用者が別targetへ足した分をそのまま活かせる。
+const SAHAI_MANAGED_SERVICE_KEYS: [&str; 2] = ["ports", "env_file"];
+
+/// compose定義から差配が管理するキーを取り除いたYAMLを返す。
+pub fn strip_managed_keys(compose_content: &str) -> Result<String, CoreError> {
     let mut doc: serde_yaml::Value = serde_yaml::from_str(compose_content)
         .map_err(|e| CoreError::Validation(format!("composeファイルの解析に失敗しました: {e}")))?;
 
@@ -144,7 +153,9 @@ pub fn strip_published_ports(compose_content: &str) -> Result<String, CoreError>
     {
         for (_, service) in services.iter_mut() {
             if let Some(map) = service.as_mapping_mut() {
-                map.remove(serde_yaml::Value::String("ports".to_string()));
+                for key in SAHAI_MANAGED_SERVICE_KEYS {
+                    map.remove(serde_yaml::Value::String(key.to_string()));
+                }
             }
         }
     }
@@ -332,7 +343,7 @@ services:
     }
 
     #[test]
-    fn strip_published_ports_removes_ports_from_every_service() {
+    fn strip_managed_keys_removes_ports_from_every_service() {
         let yaml = "services:
   web:
     image: nginx
@@ -343,7 +354,7 @@ services:
     ports:
       - \"5432:5432\"
 ";
-        let out = strip_published_ports(yaml).unwrap();
+        let out = strip_managed_keys(yaml).unwrap();
         assert!(!out.contains("ports"), "{out}");
         // サービス自体は残る
         assert!(out.contains("web"));
@@ -352,7 +363,7 @@ services:
     }
 
     #[test]
-    fn strip_published_ports_keeps_other_keys() {
+    fn strip_managed_keys_keeps_other_keys() {
         let yaml = "services:
   web:
     image: nginx
@@ -367,7 +378,7 @@ services:
 volumes:
   myvol:
 ";
-        let out = strip_published_ports(yaml).unwrap();
+        let out = strip_managed_keys(yaml).unwrap();
         assert!(!out.contains("\"80:80\""), "{out}");
         // volumesはtarget単位でマージされ差配の設定が勝つため残す
         assert!(out.contains("myvol"), "{out}");
@@ -377,18 +388,55 @@ volumes:
     }
 
     #[test]
-    fn strip_published_ports_is_a_no_op_without_ports() {
+    fn strip_managed_keys_removes_env_file_from_every_service() {
+        let yaml = "services:
+  web:
+    image: nginx
+    env_file:
+      - ./web.env
+  db:
+    image: postgres
+    env_file: ./db.env
+";
+        let out = strip_managed_keys(yaml).unwrap();
+        assert!(!out.contains("env_file"), "{out}");
+        assert!(!out.contains("web.env"), "{out}");
+        // 単一文字列で書かれた形式も落とせること
+        assert!(!out.contains("db.env"), "{out}");
+        assert!(out.contains("postgres"), "{out}");
+    }
+
+    /// environment: は差配の管理外なので残す。env_fileと違いマッピングであり、
+    /// overrideとマージされても両方の値が生きる。
+    #[test]
+    fn strip_managed_keys_keeps_inline_environment() {
+        let yaml = "services:
+  web:
+    image: nginx
+    env_file:
+      - ./web.env
+    environment:
+      FOO: bar
+";
+        let out = strip_managed_keys(yaml).unwrap();
+        assert!(!out.contains("env_file"), "{out}");
+        assert!(out.contains("FOO"), "{out}");
+        assert!(out.contains("bar"), "{out}");
+    }
+
+    #[test]
+    fn strip_managed_keys_is_a_no_op_without_ports() {
         let yaml = "services:
   web:
     image: nginx
 ";
-        let out = strip_published_ports(yaml).unwrap();
+        let out = strip_managed_keys(yaml).unwrap();
         assert!(out.contains("nginx"));
     }
 
     #[test]
-    fn strip_published_ports_rejects_broken_yaml() {
-        assert!(strip_published_ports(
+    fn strip_managed_keys_rejects_broken_yaml() {
+        assert!(strip_managed_keys(
             "services:
   - ["
         )
