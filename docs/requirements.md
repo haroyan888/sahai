@@ -234,6 +234,8 @@ Web UI(SPA)は`window.location.hostname`からアクセス元のサブドメイ�
 ## 7. 起動・停止・削除
 
 - **起動(image型)**: `docker pull` → `docker run -d --name svc-{ServiceContainer.id} --restart unless-stopped -p {host_port}:{container_port}/{protocol} (ポート数分) -v ... --env-file ... {image}`
+  - **pullはbollard経由のため、レジストリの資格情報をリクエストに明示的に添える。** bollardはDocker Engine APIを直接叩き、`docker login`が書く`~/.docker/config.json`を参照しない。添えないと匿名でのpullになり、htpasswd認証を要求する差配のレジストリからは取得できない(compose型は`docker compose pull`=CLI経由のため設定ファイルが効き、この問題は起きない)
+  - 資格情報を添えるのは**イメージが差配のレジストリのものである場合のみ**。Docker Hub等の外部レジストリ宛のリクエストに差配の資格情報を送らない
 - **compose_content中の`ports:`と`env_file:`は起動時に除去する**。どちらも差配が一元管理する項目であり、overrideでの上書きでは打ち消せないため、base側の記述自体を落とす。docker composeはこの2つを置き換えではなく**合算**するので、利用者の記述が残ったまま差配の設定が追加されてしまう(`image:`をoverrideで無効化できるのは、スカラーであり置き換えになるため)
   - `ports`: 利用者の公開設定が残ると意図しないポートがホストに開く。衝突検証はDBを見るだけなので、この経路で開いたポートはすり抜ける
   - `env_file`: 参照先は利用者のプロジェクト内にある相対パスであることが多いが、起動時のカレントは`compose-projects/<id>/`であり、そこにはbase.yml・override.yml・`.env`しか置かれない。存在しないファイルを指したまま起動しようとして失敗する。環境変数はWeb UIで設定したものだけを注入する

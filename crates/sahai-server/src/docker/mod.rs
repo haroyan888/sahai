@@ -81,6 +81,7 @@ impl DockerClients {
             image_runtime: image_runtime::ImageRuntime::new(
                 docker.clone(),
                 sahai_data_root.clone(),
+                settings.clone(),
             ),
             compose_runtime: compose_runtime::ComposeRuntime::new(settings, sahai_data_root),
             inspector: Inspector::new(docker),

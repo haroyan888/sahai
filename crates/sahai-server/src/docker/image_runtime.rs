@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
+use bollard::auth::DockerCredentials;
 use bollard::container::{
     Config, CreateContainerOptions, RemoveContainerOptions, StartContainerOptions,
     StopContainerOptions,
@@ -11,6 +12,8 @@ use bollard::container::{
 use bollard::image::CreateImageOptions;
 use bollard::models::{HostConfig, PortBinding};
 use bollard::Docker;
+
+use crate::settings::SharedSettings;
 use futures_util::StreamExt;
 use sahai_core::naming::SAHAI_NETWORK;
 
@@ -21,12 +24,16 @@ use super::{ContainerLifecycle, DockerError};
 pub struct ImageRuntime {
     docker: Docker,
     sahai_data_root: PathBuf,
+    /// pullに添えるレジストリ資格情報の取得元。Web UIから変更されるため
+    /// 構築時にコピーせず、呼び出しのたびに最新値を読む
+    settings: SharedSettings,
 }
 
 impl ImageRuntime {
-    pub fn new(docker: Docker, sahai_data_root: PathBuf) -> Self {
+    pub fn new(docker: Docker, sahai_data_root: PathBuf, settings: SharedSettings) -> Self {
         ImageRuntime {
             docker,
+            settings,
             sahai_data_root,
         }
     }
@@ -36,11 +43,35 @@ impl ImageRuntime {
             from_image: image,
             ..Default::default()
         };
-        let mut stream = self.docker.create_image(Some(options), None, None);
+        // bollardはDocker Engine APIを直接叩くため、docker loginが書く
+        // ~/.docker/config.jsonを参照しない。資格情報を添えないと匿名でのpullになり、
+        // htpasswd認証を要求する差配のレジストリからは取得できない
+        // (compose型はdocker compose pull=CLI経由なので設定ファイルが効く)
+        let credentials = self.registry_credentials_for(image).await;
+        let mut stream = self.docker.create_image(Some(options), None, credentials);
         while let Some(progress) = stream.next().await {
             progress?;
         }
         Ok(())
+    }
+
+    /// 差配のレジストリ宛のときだけ資格情報を返す。
+    /// Docker Hub等の外部レジストリへ差配の資格情報を送らないため、
+    /// イメージ名がレジストリのホストで始まる場合に限る。
+    async fn registry_credentials_for(&self, image: &str) -> Option<DockerCredentials> {
+        let settings = self.settings.read().await;
+        let registry_url = settings.registry_url.trim();
+        if registry_url.is_empty() || !image.starts_with(&format!("{registry_url}/")) {
+            return None;
+        }
+        let username = settings.registry_username.clone()?;
+        let password = settings.registry_password.clone()?;
+        Some(DockerCredentials {
+            username: Some(username),
+            password: Some(password),
+            serveraddress: Some(registry_url.to_string()),
+            ..Default::default()
+        })
     }
 
     /// 実行前提: `service.containers`は要素1件のみ(image型は暗黙的に1コンテナ)。
@@ -225,11 +256,86 @@ mod tests {
     use super::*;
 
     fn runtime() -> ImageRuntime {
+        runtime_with_settings(settings(None))
+    }
+
+    fn runtime_with_settings_and_root(settings: SharedSettings, root: PathBuf) -> ImageRuntime {
+        ImageRuntime::new(
+            Docker::connect_with_local_defaults().unwrap(),
+            root,
+            settings,
+        )
+    }
+
+    fn runtime_with_settings(settings: SharedSettings) -> ImageRuntime {
         // bollardの接続はDocker daemon不在でも遅延評価のため失敗しない(起動テストで確認済み)
         ImageRuntime::new(
             Docker::connect_with_local_defaults().unwrap(),
             PathBuf::from("/var/sahai"),
+            settings,
         )
+    }
+
+    /// registry_urlは固定。資格情報の有無だけを差し替える
+    fn settings(credentials: Option<(&str, &str)>) -> SharedSettings {
+        let (username, password) = match credentials {
+            Some((u, p)) => (Some(u.to_string()), Some(p.to_string())),
+            None => (None, None),
+        };
+        std::sync::Arc::new(tokio::sync::RwLock::new(crate::settings::Settings {
+            domain: "example.com".to_string(),
+            https_redirect: true,
+            registry_url: "registry.sahai.example.com".to_string(),
+            api_token: "t".to_string(),
+            dns_provider: String::new(),
+            acme_email: String::new(),
+            registry_username: username,
+            registry_password: password,
+        }))
+    }
+
+    /// bollardは~/.docker/config.jsonを見ないため、資格情報を添えないと匿名pullになり
+    /// htpasswd認証のレジストリから取得できない。
+    #[tokio::test]
+    async fn adds_credentials_for_own_registry() {
+        let rt = runtime_with_settings(settings(Some(("u", "p"))));
+        let creds = rt
+            .registry_credentials_for("registry.sahai.example.com/myapp:latest")
+            .await
+            .expect("自分のレジストリには資格情報を添えるべき");
+        assert_eq!(creds.username.as_deref(), Some("u"));
+        assert_eq!(creds.password.as_deref(), Some("p"));
+        assert_eq!(
+            creds.serveraddress.as_deref(),
+            Some("registry.sahai.example.com")
+        );
+    }
+
+    /// 外部レジストリ宛のリクエストに差配の資格情報を送らない。
+    #[tokio::test]
+    async fn omits_credentials_for_external_registries() {
+        let rt = runtime_with_settings(settings(Some(("u", "p"))));
+        for image in [
+            "nginx:alpine",
+            "docker.io/library/postgres:16",
+            "ghcr.io/someone/app:latest",
+            // 前方一致だけで判定すると通ってしまう紛らわしい名前
+            "registry.sahai.example.com.evil.test/app:latest",
+        ] {
+            assert!(
+                rt.registry_credentials_for(image).await.is_none(),
+                "{image}に資格情報を添えてはいけない"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn omits_credentials_when_not_configured() {
+        let rt = runtime_with_settings(settings(None));
+        assert!(rt
+            .registry_credentials_for("registry.sahai.example.com/myapp:latest")
+            .await
+            .is_none());
     }
 
     fn image_service(
@@ -500,10 +606,7 @@ mod tests {
             route_warning: None,
         };
 
-        let rt = ImageRuntime::new(
-            Docker::connect_with_local_defaults().unwrap(),
-            data_root.clone(),
-        );
+        let rt = runtime_with_settings_and_root(settings(None), data_root.clone());
         let start_result = rt.start(&service).await;
 
         // nginxの起動を待つ
