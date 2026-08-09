@@ -1,0 +1,16 @@
+[Unit]
+Description=sahai (self-hosted PaaS: traefik + sahai-server + registry)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=__SAHAI_REPO_DIR__
+ExecStart=__DOCKER_BIN__ compose -f __SAHAI_REPO_DIR__/compose.yaml up -d
+ExecStop=__DOCKER_BIN__ compose -f __SAHAI_REPO_DIR__/compose.yaml down
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

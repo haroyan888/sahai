@@ -1,0 +1,158 @@
+# 開発用の完結したcomposeファイル。本番の compose.yaml には依存せず、
+# このファイル単体で traefik・sahai-server・web・registry の4サービスすべてが
+# 完結する。
+#
+# 使い方:
+#   cp dev.env.example dev.env   # 初回のみ。ポート等をデフォルトから変えたい場合に編集
+#   docker compose -f dev.compose.yaml --env-file dev.env up -d --build
+#
+# 公開ポートを持つのはtraefikのみ(既定80。dev.envのSAHAI_TRAEFIK_HTTP_PORTで変更可)。
+# sahai-server・web・registryはdockerネットワーク内部のみで完結し、すべて
+# Traefik経由でアクセスする(本番と同じ「Traefikだけが外向きに出る」トポロジー)。
+#
+# - sahai-server: リポジトリをbindマウントし、リリースビルド済みバイナリではなく
+#   `cargo run`で起動する(ソースを編集して再起動すればcargoの増分コンパイルで
+#   すぐ反映される)
+# - web: 同様にbindマウントし、`npm run dev`(Viteのホットリロード開発サーバー)で
+#   起動する
+#
+# Web UI・APIは本番ではsahai-server自身が単一のTraefikルートとして配信するが、
+# 開発時はweb/sahai-serverを別コンテナのまま起動するため、
+# sahai-server自身が書き出すルート(常に自分自身への単一マージルート)の代わりに
+# traefik/dev-dynamic/dev-routes.yml という開発専用の静的ルートでパス分割している
+# (/api/* → sahai-server、それ以外 → web)。**このためdev環境ではドメインを
+# localhostに固定する前提**(初期設定画面でdomain=localhostと入力すること。
+# 詳細はdev-routes.yml参照)。
+#
+# 本番データ(/var/sahai)を汚さないよう、DB・レジストリ等のデータは別ディレクトリ
+# (/var/sahai-dev)に分離している。
+
+services:
+  traefik:
+    image: traefik:v3.1
+    # Traefikは静的設定を単一のソースからのみ読み込み、--configFile使用時は他の
+    # CLIフラグ・環境変数からの静的設定が無視される
+    # (https://github.com/traefik/traefik/issues/7545)。そのため全ての静的設定を
+    # CLIフラグに統一し、--configFileは使わない
+    command:
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --providers.file.directory=/var/sahai/traefik/dynamic
+      - --providers.file.watch=true
+      - --log.level=INFO
+      - --api.dashboard=false
+      - --certificatesresolvers.letsencrypt.acme.email=${SAHAI_ACME_EMAIL:-}
+      - --certificatesresolvers.letsencrypt.acme.storage=/acme/acme.json
+      - --certificatesresolvers.letsencrypt.acme.dnschallenge=true
+      # 既定値は持たない(compose.yamlと同じ理由。開発ではSAHAI_DOMAIN=localhostの
+      # 自己署名証明書運用が前提のため、通常は未設定のままで問題ない)
+      - --certificatesresolvers.letsencrypt.acme.dnschallenge.provider=${SAHAI_DNS_PROVIDER:-}
+      - --certificatesresolvers.letsencrypt.acme.dnschallenge.resolvers=1.1.1.1:53,1.0.0.1:53
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # sahai-server(dev)と共有する動的ルートディレクトリ。本番と違い読み書き可能で
+      # マウントする(この下に開発専用の静的ルートを1ファイルだけ重ねてbind-mountする
+      # ため。:roのままだとマウントポイントを作成できない罠を過去に踏んでいる)
+      - /var/sahai-dev/traefik/dynamic:/var/sahai/traefik/dynamic
+      - ./traefik/dev-dynamic/dev-routes.yml:/var/sahai/traefik/dynamic/dev-routes.yml:ro
+      - /var/sahai-dev/traefik/acme:/acme
+    # DNSプロバイダの認証情報は、sahai-server自身が/var/sahai/.sahai.envを読み、
+    # bollard経由でこのコンテナを再作成する際に直接Envとして渡す設計に統一している
+    # (traefik::container::recreate_traefik参照。本番のcompose.yaml参照)
+    environment:
+      # dev-routes.ymlのHost()ルールがGoテンプレート({{ env "SAHAI_DOMAIN" }})で
+      # 参照する。Web UIの初期設定画面で入力するドメインと同じ値をここにも
+      # 設定しておくこと(この環境変数はコンテナ起動時に一度だけ読まれるため、
+      # 初期設定画面だけで変更してもTraefik側のルールには反映されない)
+      - SAHAI_DOMAIN=${SAHAI_DOMAIN:-localhost}
+    ports:
+      # 公開ポートを持つのはtraefikのみ(このcomposeファイル全体でここだけ)
+      - "${SAHAI_TRAEFIK_HTTP_PORT:-80}:80"
+      - "443:443"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - sahai
+
+  sahai-server:
+    image: sahai-server-dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # ホストと同一パスでマウントすることが必須(Docker-out-of-Dockerのパス整合性。
+      # compose.yaml参照)。本番の/var/sahaiとは別ディレクトリにして分離する
+      - /var/sahai-dev:/var/sahai
+      # ホストのリポジトリをそのままbindマウントし、編集がすぐコンテナに反映される
+      - .:/app
+      # cargoのビルドキャッシュ・依存キャッシュは名前付きボリュームに逃がす。
+      # 上の`.:/app`だけだと/app/targetがホストのtarget/と同じ場所になってしまい、
+      # この開発機でネイティブに実行するcargo build/test(ホストOS向け)の成果物と
+      # コンテナ内cargo run(Linux向け)の成果物が衝突するため
+      - cargo_target_dev:/app/target
+      - cargo_registry_dev:/usr/local/cargo/registry
+    command: cargo run -p sahai-server
+    environment:
+      - SAHAI_BIND_ADDR=0.0.0.0:8080
+      - SAHAI_DATA_ROOT=/var/sahai
+      - SAHAI_API_TOKEN=${SAHAI_API_TOKEN:-}
+      - SAHAI_DOMAIN=${SAHAI_DOMAIN:-localhost}
+      - SAHAI_REGISTRY_URL=${SAHAI_REGISTRY_URL:-registry.${SAHAI_DOMAIN:-localhost}}
+      - SAHAI_HTTPS_REDIRECT=${SAHAI_HTTPS_REDIRECT:-false}
+      - SAHAI_DOCKER_HOST_ADDRESS=host.docker.internal
+      - SAHAI_REGISTRY_INTERNAL_URL=${SAHAI_REGISTRY_INTERNAL_URL:-http://registry:5000}
+      # `sahai service create`(サーバー側build+push)を検証する場合のみ設定する。
+      # DBが空の初回起動時にのみ読まれる後方互換のシード用で、
+      # 以降はWeb UIの「レジストリ設定」カードから変更できる
+      - SAHAI_REGISTRY_USERNAME=${SAHAI_REGISTRY_USERNAME:-}
+      - SAHAI_REGISTRY_PASSWORD=${SAHAI_REGISTRY_PASSWORD:-}
+    networks:
+      - sahai
+    # 外部公開しない。dev-routes.ymlのdev-apiルート(sahai.localhost/api/*)経由で
+    # Traefikからのみ到達させる
+
+  web:
+    image: sahai-web-dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: web-dev
+    volumes:
+      - ./web:/app/web
+      # ホスト側のnode_modules(OS依存のネイティブモジュールを含みうる)を
+      # コンテナ内に持ち込まないよう、名前付きボリュームでnode_modulesだけ上書きする
+      - web_node_modules:/app/web/node_modules
+    environment:
+      # Traefik経由で同一オリジンとしてアクセスするため相対パスのままでよい
+      - VITE_API_BASE_URL=
+      # Docker(特にWindows/macOSホスト上のDocker Desktop)経由のbindマウントでは
+      # ネイティブのファイルシステムイベントが伝播しないことが多いため、
+      # ポーリング監視にフォールバックする(vite.config.ts側でも設定済み)
+      - CHOKIDAR_USEPOLLING=true
+    networks:
+      - sahai
+    # 外部公開しない。dev-routes.ymlのdev-web-uiルート経由でTraefikからのみ到達させる
+
+  registry:
+    image: registry:2
+    volumes:
+      - /var/sahai-dev/registry:/var/lib/registry
+      - ./registry/auth:/auth:ro
+    environment:
+      - REGISTRY_AUTH=htpasswd
+      - REGISTRY_AUTH_HTPASSWD_REALM=Registry Realm
+      - REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd
+    networks:
+      - sahai
+    # 外部公開しない。registry.localhost経由でTraefikからのみ到達させる
+
+networks:
+  sahai:
+    driver: bridge
+
+volumes:
+  cargo_target_dev:
+  cargo_registry_dev:
+  web_node_modules:

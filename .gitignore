@@ -1,0 +1,19 @@
+/target
+**/*.rs.bk
+# 旧版が秘匿値入りの設定ファイルを置いていた場所。既存クローンに残っている
+# 可能性があるため無視し続ける
+/sahai_data/
+# バックアップ等の派生ファイル(.env.backup-* など)も拾うためワイルドカードで指定する。
+# 完全一致だけでは取りこぼす。dev.env.exampleは値の入らないテンプレートなので追跡する
+.env
+.env.*
+dev.env
+dev.env.*
+!dev.env.example
+/traefik/acme/
+/registry/auth/htpasswd
+# 手動テスト用に作成された秘匿値入りファイル。.env系の命名規則に合わないため個別に無視する
+/local.env
+# Claude Codeのローカル権限設定・実行時ロックファイル。開発者ごとの環境に依存するため追跡しない
+/.claude/settings.local.json
+/.claude/scheduled_tasks.lock

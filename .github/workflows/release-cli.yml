@@ -1,0 +1,97 @@
+name: Release CLI
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  # 各プラットフォームでビルドし、成果物はアーティファクトとして預けるだけにする。
+  # 並列ジョブがそれぞれリリースを作りに行くと、ドラフトが重複して作られることがある
+  # (タグ検索と作成の間に他ジョブが割り込むため)。リリース作成は後段の1ジョブに集約する。
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # LinuxのTLSはnative-tls経由でシステムのOpenSSLに動的リンクする
+      - name: Install OpenSSL build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libssl-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build sahai-cli
+        run: cargo build --release --target ${{ matrix.target }} --bin sahai --manifest-path crates/sahai-cli/Cargo.toml
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          stage="sahai-${version}-${{ matrix.target }}"
+          mkdir -p "$stage"
+          cp "target/${{ matrix.target }}/release/sahai" "$stage/"
+          cp LICENSE THIRD-PARTY-LICENSES.html "$stage/"
+          tar czf "${stage}.tar.gz" "$stage"
+          echo "ASSET=${stage}.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = "${env:GITHUB_REF_NAME}" -replace '^v', ''
+          $stage = "sahai-$version-${{ matrix.target }}"
+          New-Item -ItemType Directory -Path $stage | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/sahai.exe" -Destination $stage
+          Copy-Item LICENSE, THIRD-PARTY-LICENSES.html -Destination $stage
+          Compress-Archive -Path $stage -DestinationPath "$stage.zip"
+          Add-Content -Path $env:GITHUB_ENV -Value "ASSET=$stage.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.target }}
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: cli-*
+          merge-multiple: true
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          draft: true
+          files: dist/*
+          fail_on_unmatched_files: true

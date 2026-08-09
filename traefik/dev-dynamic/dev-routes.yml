@@ -1,0 +1,63 @@
+# 開発用compose(dev.compose.yaml)専用の静的Traefikルート。
+#
+# 本番ではWeb UI(静的ファイル)とAPIをsahai-server自身が単一コンテナ・単一の
+# Traefikルートとして配信するが(route_writer.rs参照)、開発時はsahai-server(cargo run)と
+# web(npm run dev/Vite)を別コンテナのまま起動してホットループを優先するため、
+# sahai-server自身が書き出すルートの代わりにこのファイルでパス分割している
+# (/api/* → sahai-server:8080、それ以外 → web:5173)。
+#
+# Host()のドメイン部分はTraefikのfile provider(Goテンプレート)機能で
+# `{{ env "SAHAI_DOMAIN" }}` により、Traefikコンテナ自身の環境変数SAHAI_DOMAIN
+# (dev.compose.yaml参照)から動的に埋め込む。2026-07-23、ハードコードだと
+# LAN内の別端末から独自ドメイン経由でアクセスしたい場合にこのファイルのルールが
+# 一切マッチせず、sahai-server自身が書き出す(動的にdomainを読むので追従する)
+# admin routeへフォールバックしてしまい、dev用sahai-serverはビルド済み静的
+# ファイルを持たないため古い/空のレスポンスになる問題があったための変更。
+#
+# **注意**: この環境変数はTraefikコンテナ起動時に一度だけ読まれる。Web UIの
+# 初期設定画面(またはSettings画面)で入力するドメインと、`dev.env`の
+# SAHAI_DOMAINは必ず同じ値にすること(片方だけ変えても一致しなくなり、
+# このファイルのルールがマッチしなくなる)。
+#
+# priority: 200はsahai-server自身が書き出すadmin route(priority 100)より確実に
+# 高くしてある。Host()がsahai.<domain>限定なので、他の登録済みサービス
+# (myapp.<domain>等、動的に生成されるper-serviceルート)とは競合しない。
+#
+# **tls/entryPointsについて(2026-07-30追加)**: 実ドメイン+SAHAI_HTTPS_REDIRECT=trueで
+# 検証したところ、tlsブロックを持たないルーターはwebsecure(:443)では一切応答せず、
+# 代わりに優先度の低いsahai-server自身のadmin route(tls付き)にフォールバックしてしまう
+# 問題が発覚した(route_writer.rsのコメントにある「tlsキーの有無がプロトコル可用性を
+# 直接左右する」という実機検証結果と同じ制約)。そのためtls: {}とentryPoints:
+# [web, websecure]を明示した。ただしこれによりSAHAI_HTTPS_REDIRECT=falseでの
+# 従来のhttp直接アクセス(localhost開発フロー)はこのルーターではweb(:80)から
+# 応答しなくなる(https-redirectミドルウェア相当が無いため301にもならず、
+# tls無しのアクセスはそもそも到達できない)。現状はSAHAI_HTTPS_REDIRECT=true固定運用を
+# 前提としている。false運用も両立させたい場合は、route_writer.rsと同様にweb専用
+# ルーター(tlsなし)とwebsecure専用ルーター(tls付き)を分離する対応が別途必要
+http:
+  routers:
+    dev-web-ui:
+      rule: 'Host(`sahai.{{ env "SAHAI_DOMAIN" }}`) && !PathPrefix(`/api`)'
+      service: dev-web-ui
+      priority: 200
+      entryPoints:
+      - web
+      - websecure
+      tls: {}
+    dev-api:
+      rule: 'Host(`sahai.{{ env "SAHAI_DOMAIN" }}`) && PathPrefix(`/api`)'
+      service: dev-api
+      priority: 200
+      entryPoints:
+      - web
+      - websecure
+      tls: {}
+  services:
+    dev-web-ui:
+      loadBalancer:
+        servers:
+          - url: "http://web:5173"
+    dev-api:
+      loadBalancer:
+        servers:
+          - url: "http://sahai-server:8080"

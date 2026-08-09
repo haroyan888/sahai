@@ -1,0 +1,12 @@
+accepted = [
+    "Apache-2.0",
+    "MIT",
+    # 完全に許容的なライセンス(コピーレフトなし)。encoding_rs等が使用
+    "BSD-3-Clause",
+    # 弱いコピーレフト(ファイル単位)。option-ext等が使用。改変せず利用するだけなら
+    # ソース開示義務は生じない
+    "MPL-2.0",
+    # Unicodeデータテーブル用の許諾ライセンス。MIT同様に許容的(litemap/tinystr/
+    # zerovec等、ICU4X関連クレートが使用)
+    "Unicode-3.0",
+]

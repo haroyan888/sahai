@@ -1,0 +1,143 @@
+# 差配(Sahai)を動かすためのホスト常駐インフラ一式(Traefik / sahai-server / registry)。
+# Sahaiが管理する個々のサービス(コンテナ)はこれとは別に、sahai-server自身が
+# `docker run`/`docker compose`で起動・停止する。
+# Web UI(React SPA)はsahai-server自身がビルド済み静的ファイルを配信する。
+# 管理画面(sahai.<domain>)のTraefikルートはsahai-serverが起動時に
+# /var/sahai/traefik/dynamic/static-routes.ymlへ書き出す(route_writer.rs参照。
+# 他の動的ルートと同じ仕組み)。
+
+services:
+  traefik:
+    image: traefik:v3.1
+    restart: unless-stopped
+    # Traefikは静的設定を単一のソースからのみ読み込み、--configFile使用時は他の
+    # CLIフラグ・環境変数からの静的設定が無視される
+    # (https://github.com/traefik/traefik/issues/7545)。そのため全ての静的設定を
+    # CLIフラグに統一し、--configFileは使わない。
+    # SAHAI_DNS_PROVIDERにはlegoが対応するプロバイダ名を指定する。既定値は持たない
+    # (特定のDNSプロバイダに固定しない方針のため。SAHAI_ACME_EMAILと
+    # 同様)。未設定のままdocker compose upした場合、Traefikは証明書取得ができない
+    # 状態〈自己署名証明書のまま〉で起動する。Web UIの「DNS/証明書設定」画面で
+    # プロバイダ・認証情報を保存すると、sahai-serverがこのコンテナを認証情報付きで
+    # 再作成する。
+    # プロバイダが要求する認証情報自体はsahai-serverがbollard経由で渡す(下記コメント参照)
+    command:
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --providers.file.directory=/var/sahai/traefik/dynamic
+      - --providers.file.watch=true
+      - --log.level=INFO
+      - --api.dashboard=false
+      - --certificatesresolvers.letsencrypt.acme.email=${SAHAI_ACME_EMAIL:-}
+      # Let's Encryptは同じ識別子の組に対して7日間で5枚までしか発行しない。
+      # セットアップを繰り返し試すときはstagingへ向けて本番の枠を温存する:
+      #   SAHAI_ACME_CA_SERVER=https://acme-staging-v02.api.letsencrypt.org/directory
+      # stagingの証明書はブラウザに信頼されない(警告が出るが動作確認はできる)。
+      # 切り替えるときは acme.json に別CAのアカウントが残るため clean で消すこと
+      - --certificatesresolvers.letsencrypt.acme.caserver=${SAHAI_ACME_CA_SERVER:-https://acme-v02.api.letsencrypt.org/directory}
+      - --certificatesresolvers.letsencrypt.acme.storage=/acme/acme.json
+      - --certificatesresolvers.letsencrypt.acme.dnschallenge=true
+      - --certificatesresolvers.letsencrypt.acme.dnschallenge.provider=${SAHAI_DNS_PROVIDER:-}
+      - --certificatesresolvers.letsencrypt.acme.dnschallenge.resolvers=1.1.1.1:53,1.0.0.1:53
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/sahai/traefik/dynamic:/var/sahai/traefik/dynamic:ro
+      - /var/sahai/traefik/acme:/acme
+    # DNSプロバイダの認証情報(例: cloudflareならCF_DNS_API_TOKEN)は、以前はここに
+    # env_file: /var/sahai/.sahai.envディレクティブを指定してdocker compose自身に
+    # 読ませていたが、Windows(Docker Desktop)ではこの`docker compose`コマンド自体を
+    # ホストから実行する前提が崩れる場面(sahai-server内部からのTraefik再作成)で
+    # 機能しないことが判明した。現在はsahai-server自身が/var/sahai/.sahai.envを読み、
+    # bollard経由でTraefikコンテナ作成時に直接Envとして渡す設計に統一した
+    # (traefik::container::recreate_traefik参照)。そのため、この
+    # `docker compose up`で最初に起動されるTraefikはDNS認証情報を持たない状態になる
+    # (証明書は自己署名のまま)。初期設定(Web UIのDNS/証明書設定保存)が完了すると、
+    # sahai-serverがこのコンテナをbollardで再作成し、認証情報入りの状態に置き換える
+    ports:
+      # 80番はHTTP→HTTPSへの恒久リダイレクト専用に公開する。
+      # DNS-01を使うため証明書取得自体には不要だが、httpでアクセスされた場合の
+      # 利便性のために公開する。実サービスのルーティングは443のみが行う
+      - "80:80"
+      # 実サービスのルーティングは443が行う
+      - "443:443"
+    extra_hosts:
+      # Linux上のDocker Engineでは`host.docker.internal`が自動解決されないため明示する。
+      # sahai-serverが生成するTraefikルート(is_httpサービスのbackend URL)が
+      # このホスト名を使う
+      - "host.docker.internal:host-gateway"
+    networks:
+      - sahai
+
+  sahai-server:
+    # 公開済みイメージを使い、サーバー上でのRustビルドを避ける。
+    # setup.sh/ps1が先にpullを試し、取得できればビルドは走らない。取得できない場合
+    # (オフライン・未公開のフォーク等)はスクリプトが明示的に下のbuild:を実行する。
+    # 別のイメージを使うならSAHAI_IMAGEで上書きする
+    image: ${SAHAI_IMAGE:-haroyan/sahai-server:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    volumes:
+      # dockerdはホストのものを直接操作する(コンテナ内にdockerdは持たない)
+      - /var/run/docker.sock:/var/run/docker.sock
+      # ホストと同一パスでマウントすることが必須(Docker-out-of-Dockerのパス整合性。
+      # bollard/docker composeへ渡すパスがホスト側のパスとして
+      # 解釈されるため、ここがずれるとボリュームマウントが壊れる。Windows
+      # (Docker Desktop)ではコンテナ側マウント先にWindowsパスを指定できないため、
+      # リポジトリのクローン先をマウントする方式は使えない。Traefik再作成は
+      # bollard直接操作、DNS設定(.sahai.env)もsahai_data_root(/var/sahai)配下に
+      # 統一しており、リポジトリ自体へのアクセスはsahai-serverに不要になっている
+      - /var/sahai:/var/sahai
+    environment:
+      - SAHAI_BIND_ADDR=0.0.0.0:8080
+      - SAHAI_DATA_ROOT=/var/sahai
+      - SAHAI_API_TOKEN=${SAHAI_API_TOKEN:-}
+      # 全サービスのベースドメイン。sahai-server起動時のsubdomain計算・
+      # 管理画面Traefikルート生成の両方に使う。
+      # 既定値は持たない(.envで未設定のまま気付かずデプロイしてしまう事故を避けるため)。
+      # 未設定ならsahai-server側が「未設定」と判定しWeb UIの初期設定画面へ導く。
+      # settings.rs::seed_from_env、main.rs参照)
+      - SAHAI_DOMAIN=${SAHAI_DOMAIN:-}
+      - SAHAI_REGISTRY_URL=${SAHAI_REGISTRY_URL:-registry.${SAHAI_DOMAIN:-}}
+      # HTTP(:80)からHTTPS(:443)への恒久リダイレクトを行うか(既定true)。
+      # SAHAI_DOMAINをローカルなドメイン(例: localhost)にしたテスト環境では
+      # 実際のLet's Encrypt証明書を取得できず自己署名証明書のままになるため、
+      # falseにすると平文httpのまま直接アクセスできる(本番のドメインではtrueのまま使う)
+      - SAHAI_HTTPS_REDIRECT=${SAHAI_HTTPS_REDIRECT:-true}
+      # Traefik(別コンテナ)からDockerホストのpublishedポートへ到達するためのアドレス。
+      # Linux + Docker Engine 20.10+ の場合、Traefik側に
+      # extra_hosts: ["host.docker.internal:host-gateway"] が必要(下記traefikサービス参照)
+      - SAHAI_DOCKER_HOST_ADDRESS=host.docker.internal
+      # registry.sahai.<domain>宛のTraefikルート生成用、registryコンテナのアドレス
+      # 。
+      # .envで上書きしない限り既定値(http://registry:5000)のまま使えばよい
+      - SAHAI_REGISTRY_INTERNAL_URL=${SAHAI_REGISTRY_INTERNAL_URL:-http://registry:5000}
+      # `sahai service create`(サーバー側build+push)専用のレジストリ資格情報。
+      # 利用者がローカルで`docker login`する`container push`とは別の資格情報ストア
+      # (registry/README.md参照)。DBが空の初回起動時にのみ読まれる後方互換のシード用で、
+      # 以降はWeb UIの「レジストリ設定」カードから変更でき、このコンテナを
+      # --force-recreateし直す必要はない
+      - SAHAI_REGISTRY_USERNAME=${SAHAI_REGISTRY_USERNAME:-}
+      - SAHAI_REGISTRY_PASSWORD=${SAHAI_REGISTRY_PASSWORD:-}
+    networks:
+      - sahai
+    # 外部公開しない(起動時に自分で書き出すTraefikのsahai.<domain>ルートで到達させる。
+    # route_writer.rs::write_static_admin_routes参照)
+
+  registry:
+    image: registry:2
+    restart: unless-stopped
+    volumes:
+      - /var/sahai/registry:/var/lib/registry
+      - ./registry/auth:/auth:ro
+    environment:
+      - REGISTRY_AUTH=htpasswd
+      - REGISTRY_AUTH_HTPASSWD_REALM=Registry Realm
+      - REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd
+    networks:
+      - sahai
+
+networks:
+  sahai:
+    driver: bridge

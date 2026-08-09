@@ -1,0 +1,11 @@
+# sahai-server(ルートのDockerfile)のビルドコンテキストから除外するもの。
+# ビルド時間短縮のため、巨大になりがちなビルド成果物・依存キャッシュを除く。
+
+target
+web/node_modules
+web/dist
+.git
+.env
+.env.*
+dev.env
+dev.env.*
