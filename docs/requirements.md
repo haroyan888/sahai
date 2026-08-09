@@ -227,7 +227,7 @@ Web UI(SPA)は`window.location.hostname`からアクセス元のサブドメイ�
   - `--remove-orphans` により、`compose_content` 編集で削除されたサービスに対応する古いコンテナを確実に片付ける
 - **停止**: `docker stop svc-{ServiceContainer.id}`(image型)。compose型は `docker compose -p svc-{Service.id} down`
 - **更新**: 停止 → 新イメージで起動(ダウンタイムあり、Blue-Green等は行わない)
-- **起動失敗時のstatus**: `docker run`/`docker compose up`が失敗した場合、`status`を`error`に設定する。成功時は`running`、明示的な停止時は`stopped`とする。ヘルスチェックの結果によって`status`が変化することはない(`status`はライフサイクル操作の成否のみを表し、`health_status`とは完全に独立している)
+- **起動失敗時のstatus**: `docker run`/`docker compose up`が失敗した場合、`status`を`error`に設定し、**失敗理由を`last_error`に保存する**。理由はDocker実行時の標準エラー出力であり、これが無いと利用者は`docker logs`まで降りないと原因が分からない。次回の起動が成功した時点でクリアする。表示が壊れないよう保存時に一定長で打ち切る。成功時は`running`、明示的な停止時は`stopped`とする。ヘルスチェックの結果によって`status`が変化することはない(`status`はライフサイクル操作の成否のみを表し、`health_status`とは完全に独立している)
 - **コンテナ・プロジェクトの命名方針**: 実際のDockerコンテナ名は `svc-{ServiceContainer.id}`、composeプロジェクト名は `svc-{Service.id}` という不変の数値IDベースの識別子を使用する。これにより`Service.name`(サービス名)を変更しても、実行中のコンテナ・composeプロジェクトの実体には一切影響しない。Web UI/CLIでの**表示上**は `ServiceContainer.name`(image型はサービス名、compose型はcompose.yamlで定義されたサービス名)を用いる。内部識別子(`svc-{id}`)はユーザーに意識させない
 - **Traefikルートの再生成**: start/restart時、Control planeはその時点の`is_http`ポート・`host_port`の状態からTraefikルート定義ファイルを冪等に再生成する(既に存在すれば上書きする)。登録時・名前変更時の即時書き出しと合わせて、ルートは常に最新のDB状態を反映する
 - ボリュームの実ディレクトリ(`/var/sahai/services/<service_id>/...`)は**start時に存在しなければ作成する**(`mkdir -p` 相当)
@@ -285,6 +285,7 @@ Service
   compose_content          -- source_type=compose の場合、ファイル本体を保存。PUTで変更可(6章参照)
   env_vars                 -- 環境変数(JSON object、平文保存。ファイルパーミッションで防御。下記4章「秘匿値の保存」参照)
   status                   -- stopped | running | error (起動失敗時にerror。7章参照)
+  last_error               -- 起動失敗時のDocker標準エラー出力。起動成功でクリア(7章参照)
   health_status             -- unknown | healthy | unhealthy (ServiceContainerのワーストケース集約値。一覧表示用)
   last_health_check_at      -- ServiceContainerの中で最新のチェック時刻(一覧表示用)
   created_at / updated_at

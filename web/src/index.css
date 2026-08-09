@@ -471,6 +471,18 @@ a {
   font-size: 14px;
 }
 
+/* Dockerの標準エラー出力をそのまま出す。改行を保ちつつ、長い行は折り返して
+   横スクロールを起こさない。全文は数十行になりうるので高さで頭打ちにする */
+.alert-detail {
+  margin: var(--space-2) 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 16em;
+  overflow-y: auto;
+  font-size: 12px;
+  font-family: var(--font-mono, monospace);
+}
+
 .alert-success {
   background: var(--success-bg);
   color: var(--success);

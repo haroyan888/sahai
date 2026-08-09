@@ -181,6 +181,12 @@ export function ServiceDetailPage({ client, idOrName, onDeleted }: ServiceDetail
   return (
     <div>
       <div className="card">
+        {detail.status === 'error' && detail.last_error && (
+          <div className="alert" role="alert">
+            <strong>起動に失敗しました</strong>
+            <pre className="alert-detail">{detail.last_error}</pre>
+          </div>
+        )}
         {detail.route_warning && (
           <p className="alert" role="alert">
             {detail.route_warning}

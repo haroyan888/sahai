@@ -394,7 +394,7 @@ mod tests {
         assert_eq!(http_count, 1);
 
         // ステータス遷移
-        services::update_status(db.pool(), service_id, ServiceStatus::Running)
+        services::update_status(db.pool(), service_id, ServiceStatus::Running, None)
             .await
             .unwrap();
         let running = services::find_by_id(db.pool(), service_id)
@@ -474,6 +474,45 @@ mod tests {
         )
         .await;
         assert!(result.is_err());
+    }
+
+    /// 起動失敗理由の保存とクリア。マイグレーション0007で追加したlast_error列が
+    /// 実際に読み書きできることの確認も兼ねる(test_dbは本物のマイグレーションを通す)。
+    #[tokio::test]
+    async fn update_status_records_and_clears_last_error() {
+        let db = test_db().await;
+        let id = services::insert(
+            db.pool(),
+            services::NewService {
+                name: "failing",
+                subdomain: "failing.example.com",
+                source_type: SourceType::Image,
+                image: Some("x:latest"),
+                compose_content: None,
+                env_vars: &serde_json::json!({}),
+            },
+        )
+        .await
+        .unwrap();
+
+        // 登録直後は理由なし
+        let row = services::find_by_id(db.pool(), id).await.unwrap().unwrap();
+        assert_eq!(row.last_error, None);
+
+        services::update_status(db.pool(), id, ServiceStatus::Error, Some("no such image"))
+            .await
+            .unwrap();
+        let row = services::find_by_id(db.pool(), id).await.unwrap().unwrap();
+        assert_eq!(row.status, "error");
+        assert_eq!(row.last_error.as_deref(), Some("no such image"));
+
+        // 起動成功でクリアされる。残すと復旧後も画面にエラーが出続ける
+        services::update_status(db.pool(), id, ServiceStatus::Running, None)
+            .await
+            .unwrap();
+        let row = services::find_by_id(db.pool(), id).await.unwrap().unwrap();
+        assert_eq!(row.status, "running");
+        assert_eq!(row.last_error, None);
     }
 
     #[tokio::test]

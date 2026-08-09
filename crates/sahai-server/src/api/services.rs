@@ -302,6 +302,7 @@ mod tests {
             compose_content: None,
             env_vars: serde_json::json!({}),
             status: ServiceStatus::Stopped,
+            last_error: None,
             health_status: crate::domain::HealthStatus::Unknown,
             last_health_check_at: None,
             created_at: "2026-01-01T00:00:00.000Z".to_string(),

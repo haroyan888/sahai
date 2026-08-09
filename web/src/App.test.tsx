@@ -76,6 +76,7 @@ function sampleDetail(overrides: Partial<ServiceDetail> = {}): ServiceDetail {
     compose_content: null,
     env_vars: {},
     status: 'stopped',
+    last_error: null,
     health_status: 'unknown',
     last_health_check_at: null,
     created_at: '2026-01-01T00:00:00.000Z',

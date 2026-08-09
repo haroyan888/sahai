@@ -68,6 +68,7 @@ type Service = {
   compose_content: string | null,               // source_type=compose のときのみ非null
   env_vars: Record<string, string>,
   status: "stopped" | "running" | "error",
+  last_error: string | null,                    // 起動失敗時のDocker標準エラー出力。起動成功でnullに戻る
   health_status: "unknown" | "healthy" | "unhealthy",
   last_health_check_at: string | null,
   created_at: string,
@@ -301,6 +302,8 @@ type UpdateServiceRequest = {
 ### `POST /api/services/{id_or_name}/start`
 
 **処理**: `docker pull` → `docker run`/`docker compose up -d --remove-orphans` → Traefikルート再生成(7章)。
+
+Docker操作が失敗した場合は`status: "error"`とあわせて`last_error`にその標準エラー出力を保存し、レスポンスにも含める。`last_error`は起動が成功した時点でnullに戻る。`route_warning`が「起動はできたがルートが書けなかった」ことを表すのに対し、`last_error`は「起動そのものができなかった」ことを表す。
 
 **冪等性**: 既に`status=running`のサービスに対しては**何もせず**そのまま`200`を返す(pull/run等のDocker操作は一切行わない)。「隠れた再起動」で呼び出し側が意図しないダウンタイムを起こさないための設計。既存の設定を反映させたい場合は明示的に`/restart`を呼ぶ。`status=stopped`または`status=error`の場合のみ実際にpull+runを実行する
 

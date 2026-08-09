@@ -12,6 +12,7 @@ pub struct ServiceRow {
     pub compose_content: Option<String>,
     pub env_vars: String,
     pub status: String,
+    pub last_error: Option<String>,
     pub health_status: String,
     pub last_health_check_at: Option<String>,
     pub created_at: String,
@@ -32,6 +33,7 @@ impl TryFrom<ServiceRow> for Service {
             env_vars: serde_json::from_str(&row.env_vars)
                 .map_err(|e| format!("env_varsのJSON解析に失敗: {e}"))?,
             status: ServiceStatus::try_from(row.status.as_str())?,
+            last_error: row.last_error,
             health_status: HealthStatus::try_from(row.health_status.as_str())?,
             last_health_check_at: row.last_health_check_at,
             created_at: row.created_at,
@@ -186,13 +188,18 @@ pub async fn update_compose_content<'e, E: SqliteExecutor<'e>>(
 }
 
 /// 起動/停止の結果を反映する。
+/// statusと、起動失敗理由をまとめて更新する。
+/// 成功時は`last_error`にNoneを渡してクリアすること。statusだけを更新すると
+/// 前回の失敗理由が残り、復旧後も画面にエラーが出続ける。
 pub async fn update_status<'e, E: SqliteExecutor<'e>>(
     executor: E,
     id: i64,
     status: ServiceStatus,
+    last_error: Option<&str>,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE services SET status = ? WHERE id = ?")
+    sqlx::query("UPDATE services SET status = ?, last_error = ? WHERE id = ?")
         .bind(status.as_str())
+        .bind(last_error)
         .bind(id)
         .execute(executor)
         .await?;

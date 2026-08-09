@@ -17,6 +17,7 @@ function detail(overrides: Partial<ServiceDetailType> = {}): ServiceDetailType {
     compose_content: null,
     env_vars: {},
     status: 'stopped',
+    last_error: null,
     health_status: 'unknown',
     last_health_check_at: null,
     created_at: '2026-01-01T00:00:00.000Z',
@@ -549,4 +550,31 @@ describe('ServiceDetailPage', () => {
       expect(client.getService).toHaveBeenCalledTimes(1)
     })
   })
+
+  it('起動に失敗している場合、理由をエラー表示する', async () => {
+    const stderr = `Error response from daemon: pull access denied for nosuch/image
+repository does not exist`
+    const client = mockClient({
+      getService: vi.fn().mockResolvedValue(detail({ status: 'error', last_error: stderr })),
+    })
+    render(<ServiceDetailPage client={client} idOrName="myapp" />)
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('起動に失敗しました')
+    // 改行を含むDockerの出力をそのまま読めること
+    expect(alert).toHaveTextContent('pull access denied')
+    expect(alert).toHaveTextContent('repository does not exist')
+  })
+
+  it('起動できている間は失敗理由を表示しない', async () => {
+    const client = mockClient({
+      // 前回の失敗理由が残っていても、statusがrunningなら出さない
+      getService: vi.fn().mockResolvedValue(detail({ status: 'running', last_error: 'stale' })),
+    })
+    render(<ServiceDetailPage client={client} idOrName="myapp" />)
+
+    await screen.findByText('myapp.example.com')
+    expect(screen.queryByText('起動に失敗しました')).not.toBeInTheDocument()
+  })
+
 })

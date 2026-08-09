@@ -5,6 +5,20 @@ use crate::error::AppError;
 use crate::repo::services;
 use crate::state::AppState;
 
+/// 起動失敗理由の保存上限。docker composeの標準エラー出力は数十行に及ぶことがあり、
+/// 全文を保存するとDBと画面表示が膨らむ。原因の判別には冒頭で足りる。
+const MAX_LAST_ERROR_LEN: usize = 2000;
+
+/// 上限を超える理由を打ち切る。文字境界で切るためcharsで数える
+/// (バイト位置で切るとマルチバイト文字を分断してパニックする)。
+fn truncate_error(message: &str) -> String {
+    if message.chars().count() <= MAX_LAST_ERROR_LEN {
+        return message.to_string();
+    }
+    let head: String = message.chars().take(MAX_LAST_ERROR_LEN).collect();
+    format!("{head}…(以降省略)")
+}
+
 /// 既にrunning中なら何もせず現在の状態を返す真の冪等no-op。
 pub async fn start(state: &AppState, id_or_name: &str) -> Result<ServiceDetail, AppError> {
     let detail = super::load_detail(state, id_or_name).await?;
@@ -16,14 +30,21 @@ pub async fn start(state: &AppState, id_or_name: &str) -> Result<ServiceDetail, 
     let runtime = state.docker.runtime_for(detail.service.source_type);
     let result = runtime.start(&detail).await;
 
-    let new_status = match &result {
-        Ok(()) => ServiceStatus::Running,
+    let (new_status, last_error) = match &result {
+        Ok(()) => (ServiceStatus::Running, None),
         Err(e) => {
             tracing::warn!("起動に失敗しました(service_id={}): {e}", detail.service.id);
-            ServiceStatus::Error
+            (ServiceStatus::Error, Some(truncate_error(&e.to_string())))
         }
     };
-    services::update_status(state.db.pool(), detail.service.id, new_status).await?;
+    // 成功時はNoneを渡してクリアする。残すと復旧後も画面にエラーが出続ける
+    services::update_status(
+        state.db.pool(),
+        detail.service.id,
+        new_status,
+        last_error.as_deref(),
+    )
+    .await?;
 
     let mut updated = super::load_detail_by_id(state, detail.service.id).await?;
     if let Err(e) = state.traefik.write_route(&updated).await {
@@ -56,7 +77,13 @@ pub async fn stop(state: &AppState, id_or_name: &str) -> Result<ServiceDetail, A
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
-    services::update_status(state.db.pool(), detail.service.id, ServiceStatus::Stopped).await?;
+    services::update_status(
+        state.db.pool(),
+        detail.service.id,
+        ServiceStatus::Stopped,
+        None,
+    )
+    .await?;
 
     super::load_detail_by_id(state, detail.service.id).await
 }
@@ -73,6 +100,77 @@ mod tests {
     use crate::service::{registration, test_support::test_state};
 
     use super::*;
+
+    #[test]
+    fn 上限以内の理由はそのまま保持する() {
+        let msg = "no such image: registry.example.com/myapp:latest";
+        assert_eq!(truncate_error(msg), msg);
+    }
+
+    #[test]
+    fn 上限を超える理由は打ち切る() {
+        let msg = "a".repeat(MAX_LAST_ERROR_LEN + 500);
+        let out = truncate_error(&msg);
+        assert!(out.starts_with(&"a".repeat(MAX_LAST_ERROR_LEN)));
+        assert!(out.ends_with("…(以降省略)"));
+    }
+
+    /// バイト位置で切るとマルチバイト文字を分断してパニックする。
+    #[test]
+    fn 打ち切りが日本語を壊さない() {
+        let msg = "あ".repeat(MAX_LAST_ERROR_LEN + 100);
+        let out = truncate_error(&msg);
+        assert_eq!(
+            out.chars().filter(|c| *c == 'あ').count(),
+            MAX_LAST_ERROR_LEN
+        );
+    }
+
+    /// 起動に失敗するサービス(存在しないイメージ)を登録して起動し、
+    /// statusがerrorになり、理由がlast_errorへ残ることを確認する。
+    /// 続けて起動できる状態にして、理由がクリアされることまで見る。
+    #[tokio::test]
+    #[ignore = "requires a running Docker daemon"]
+    async fn e2e_start_failure_records_reason_and_success_clears_it() {
+        let state = test_state().await;
+        registration::create(
+            &state,
+            CreateServiceRequest {
+                name: "e2efail".to_string(),
+                source_type: "image".to_string(),
+                image: Some("sahai-nonexistent-xyz/no-such-image:latest".to_string()),
+                compose_content: None,
+                env_vars: None,
+                containers: vec![ContainerInput {
+                    name: "e2efail".to_string(),
+                    ports: vec![],
+                    volumes: vec![],
+                }],
+            },
+        )
+        .await
+        .unwrap();
+
+        let failed = start(&state, "e2efail").await.unwrap();
+        assert_eq!(failed.service.status, ServiceStatus::Error);
+        let reason = failed.service.last_error.expect("失敗理由が保存されるべき");
+        assert!(!reason.trim().is_empty(), "理由が空: {reason}");
+
+        // 取得できるイメージへ差し替えれば起動でき、そのとき理由は消える
+        crate::repo::services::update_image(state.db.pool(), failed.service.id, "nginx:alpine")
+            .await
+            .unwrap();
+        let started = start(&state, "e2efail").await.unwrap();
+        assert_eq!(
+            started.service.status,
+            ServiceStatus::Running,
+            "理由: {:?}",
+            started.service.last_error
+        );
+        assert_eq!(started.service.last_error, None, "成功時はクリアされるべき");
+
+        stop(&state, "e2efail").await.unwrap();
+    }
 
     /// 実Dockerデーモンに対する結合テスト。`cargo test -- --ignored`で明示的に実行する。
     /// 登録→起動(実コンテナ作成)→DB上のstatus確認→実コンテナのRunning確認→停止、を
