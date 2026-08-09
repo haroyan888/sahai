@@ -382,6 +382,14 @@ sahai
 ├─ login                            -- Control plane APIへの認証トークンを保存
 └─ config                           -- 設定ファイルのパス・設定可能項目・現在値の表示
 
+COMPOSE FILE OPTION(container push / service create / service update):
+  --file <path>  使用するcomposeファイルを明示する。省略時は
+                 docker-compose.yml / docker-compose.yaml / compose.yml / compose.yaml を
+                 この順で探す。`compose.prod.yaml`のような既定名以外のファイルや、
+                 1つのプロジェクトに複数のcomposeファイルがある場合に使う
+                 (自動探索では「どれを使いたいか」を判断できない)。
+                 プロジェクトルート配下のパスのみ指定できる
+
 GLOBAL OPTIONS(全サブコマンド共通):
   --insecure  TLS証明書検証をスキップする(既定false)。SAHAI_DOMAIN=localhost等、
               DNS-01でのLet's Encrypt証明書発行ができず自己署名証明書のままの
@@ -392,6 +400,8 @@ GLOBAL OPTIONS(全サブコマンド共通):
 コマンド体系は`container`/`service`の名前空間に整理している(後方互換のエイリアスは無く、旧`register`サブコマンド体系は存在しない)。`container push`は登録済みサービスの**コンテナイメージ**を更新する操作、`service create`はサービスの新規作成を表す。
 
 CLIの責務は「ビルド+push」「サービスの追加(レコード作成)」「登録済みサービスへのライフサイクル操作の薄いラッパー」に限定する。**ポート・env・ボリュームなどのメタデータ設定、および起動操作は引き続きWeb UIの責務とする(`service create`で作成した直後のサービスもメタデータ未設定の状態であり、Web UIで設定してから起動する必要がある)。**
+
+`--file`で指定したパスは、`build.context`と同じくプロジェクトルート配下に収まることを検証する。ルート外を指すとアーカイブに含まれておらず、サーバー側で必ず失敗するため、アップロード前にCLIで弾く。
 
 **存在確認失敗時のエラーメッセージ**: `GET /api/services/{name}`が失敗した場合、HTTP 404のときのみ「先にWeb UIで登録してください」と案内する。それ以外(ネットワーク到達不可・TLS証明書検証エラー・認証エラー等)は実際のエラー内容をそのまま表示する。以前は全エラーを一律「未登録」扱いにしていたため、実際には登録済みでも通信できないだけの状況が「未登録」と誤解される原因になっていた(自己署名証明書のドメインに対する実機検証で発覚)。
 

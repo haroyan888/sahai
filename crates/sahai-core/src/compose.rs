@@ -126,6 +126,45 @@ pub struct ContainerDiff {
     pub kept: Vec<String>,
 }
 
+/// 使用するcomposeファイルを決める。
+///
+/// `explicit`が与えられればそれを使い、無ければ`find_compose_file`で既定の名前を探す。
+/// `compose.prod.yaml`のような既定名以外のファイルや、1つのプロジェクトに複数の
+/// composeファイルがある場合に明示できるようにするための関数。
+///
+/// 明示されたパスは`dir`配下に収まることを検証する。ルート外を指すとアップロードした
+/// アーカイブに含まれておらず、サーバー側で必ず失敗するため、ここで弾く
+/// (`build.context`に対する検証と同じ考え方)。
+pub fn resolve_compose_file(
+    dir: &Path,
+    explicit: Option<&str>,
+) -> Result<Option<PathBuf>, CoreError> {
+    let Some(explicit) = explicit else {
+        return Ok(find_compose_file(dir));
+    };
+
+    let joined = dir.join(explicit);
+    if !joined.is_file() {
+        return Err(CoreError::Validation(format!(
+            "composeファイルが見つかりません: {explicit}"
+        )));
+    }
+
+    // シンボリックリンクや`..`でルート外へ出ていないかを実体で確かめる
+    let root = dir
+        .canonicalize()
+        .map_err(|e| CoreError::Validation(format!("プロジェクトルートを解決できません: {e}")))?;
+    let resolved = joined
+        .canonicalize()
+        .map_err(|e| CoreError::Validation(format!("composeファイルを解決できません: {e}")))?;
+    if !resolved.starts_with(&root) {
+        return Err(CoreError::Validation(format!(
+            "composeファイルはプロジェクトルート配下を指定してください: {explicit}"
+        )));
+    }
+    Ok(Some(resolved))
+}
+
 /// 差配が一元管理するため、利用者の記述を使わないcomposeのキー。
 ///
 /// どちらもdocker composeが置き換えではなく**合算**するキーであり、overrideでの
@@ -441,5 +480,55 @@ volumes:
   - ["
         )
         .is_err());
+    }
+
+    #[test]
+    fn resolve_compose_file_falls_back_to_discovery() {
+        let dir = temp_dir("resolve_default");
+        std::fs::write(dir.join("compose.yaml"), "services: {}").unwrap();
+        assert_eq!(
+            resolve_compose_file(&dir, None).unwrap(),
+            Some(dir.join("compose.yaml"))
+        );
+    }
+
+    /// 既定名以外を明示できることが本題。compose.prod.yamlは自動探索では見つからない。
+    #[test]
+    fn resolve_compose_file_accepts_non_default_name() {
+        let dir = temp_dir("resolve_explicit");
+        std::fs::write(dir.join("compose.prod.yaml"), "services: {}").unwrap();
+        let resolved = resolve_compose_file(&dir, Some("compose.prod.yaml")).unwrap();
+        assert!(resolved.is_some());
+        assert!(resolved.unwrap().ends_with("compose.prod.yaml"));
+    }
+
+    /// 明示した場合は既定名があってもそちらを使わない
+    #[test]
+    fn resolve_compose_file_prefers_the_explicit_one() {
+        let dir = temp_dir("resolve_prefer");
+        std::fs::write(dir.join("compose.yaml"), "services: {}").unwrap();
+        std::fs::write(dir.join("compose.prod.yaml"), "services: {}").unwrap();
+        let resolved = resolve_compose_file(&dir, Some("compose.prod.yaml"))
+            .unwrap()
+            .unwrap();
+        assert!(resolved.ends_with("compose.prod.yaml"));
+    }
+
+    #[test]
+    fn resolve_compose_file_rejects_missing_file() {
+        let dir = temp_dir("resolve_missing");
+        let err = resolve_compose_file(&dir, Some("nosuch.yaml")).unwrap_err();
+        assert!(err.to_string().contains("見つかりません"), "{err}");
+    }
+
+    /// ルート外はアーカイブに含まれず、サーバー側で必ず失敗する
+    #[test]
+    fn resolve_compose_file_rejects_paths_outside_the_project_root() {
+        let dir = temp_dir("resolve_escape");
+        let outside = dir.parent().unwrap().join("outside-compose.yaml");
+        std::fs::write(&outside, "services: {}").unwrap();
+        let err = resolve_compose_file(&dir, Some("../outside-compose.yaml")).unwrap_err();
+        assert!(err.to_string().contains("プロジェクトルート配下"), "{err}");
+        let _ = std::fs::remove_file(&outside);
     }
 }

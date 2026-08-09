@@ -70,6 +70,9 @@ pub struct UploadServiceMetadata {
     pub build_args: Vec<BuildArgInput>,
     #[serde(default)]
     pub platform: Option<String>,
+    /// 使用するcomposeファイル。省略時は既定の名前から自動探索する
+    #[serde(default)]
+    pub compose_file: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -87,6 +90,9 @@ pub struct UpdateUploadMetadata {
     pub build_args: Vec<BuildArgInput>,
     #[serde(default)]
     pub platform: Option<String>,
+    /// 使用するcomposeファイル。省略時は既定の名前から自動探索する
+    #[serde(default)]
+    pub compose_file: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]

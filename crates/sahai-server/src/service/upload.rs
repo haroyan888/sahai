@@ -187,7 +187,10 @@ pub async fn update_from_archive(
     // 3. アップロードされたプロジェクト構成が登録済みのsource_typeと一致するか確認
     //    (sahai-cli側の`container push`と同じ判定。ここでも再確認するのは、
     //    このAPIをCLI以外から直接叩かれた場合の取り違え防止のため)
-    let is_compose_dir = sahai_core::compose::find_compose_file(&extract_dir).is_some();
+    let resolved_compose =
+        sahai_core::compose::resolve_compose_file(&extract_dir, metadata.compose_file.as_deref())
+            .map_err(|e| AppError::validation_single("compose_file", e.to_string()))?;
+    let is_compose_dir = resolved_compose.is_some();
     let is_compose_registered = current.service.source_type == crate::domain::SourceType::Compose;
     if is_compose_dir != is_compose_registered {
         return Err(AppError::Unprocessable(format!(
@@ -218,8 +221,7 @@ pub async fn update_from_archive(
             super::load_detail_by_id(state, current.service.id).await
         }
         crate::domain::SourceType::Compose => {
-            let compose_path = sahai_core::compose::find_compose_file(&extract_dir)
-                .expect("is_compose_dirで存在確認済み");
+            let compose_path = resolved_compose.expect("is_compose_dirで存在確認済み");
             let content = tokio::fs::read_to_string(&compose_path)
                 .await
                 .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -313,7 +315,10 @@ async fn build_request(
     registry_url: &str,
     build_args: &[(String, String)],
 ) -> Result<CreateServiceRequest, AppError> {
-    match sahai_core::compose::find_compose_file(extract_dir) {
+    let resolved =
+        sahai_core::compose::resolve_compose_file(extract_dir, metadata.compose_file.as_deref())
+            .map_err(|e| AppError::validation_single("compose_file", e.to_string()))?;
+    match resolved {
         Some(compose_path) => {
             build_compose_request(
                 metadata,
@@ -769,6 +774,7 @@ mod tests {
             UpdateUploadMetadata {
                 build_args: vec![],
                 platform: None,
+                compose_file: None,
             }
         }
 

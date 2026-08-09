@@ -18,6 +18,8 @@ use crate::commands::precheck::validate_compose_build_targets;
 pub struct UpdateArgs {
     pub name: String,
     pub context: PathBuf,
+    /// 使用するcomposeファイル。省略時は既定の名前から探す
+    pub compose_file: Option<String>,
     pub build_args: Vec<(String, String)>,
     pub platform: Option<String>,
     pub deploy: bool,
@@ -33,10 +35,12 @@ struct BuildArgDto {
 struct UpdateUploadMetadata {
     build_args: Vec<BuildArgDto>,
     platform: Option<String>,
+    /// 使用するcomposeファイル。省略時はサーバー側が既定の名前を探す
+    compose_file: Option<String>,
 }
 
 pub async fn run(client: &ApiClient, args: UpdateArgs) -> Result<(), String> {
-    validate_compose_build_targets(&args.name, &args.context)?;
+    validate_compose_build_targets(&args.name, &args.context, args.compose_file.as_deref())?;
 
     println!("アーカイブを作成中...");
     let archive_bytes = build_archive(&args.context)?;
@@ -51,6 +55,7 @@ pub async fn run(client: &ApiClient, args: UpdateArgs) -> Result<(), String> {
             })
             .collect(),
         platform: args.platform.clone(),
+        compose_file: args.compose_file.clone(),
     };
     let metadata_json = serde_json::to_string(&metadata).map_err(|e| e.to_string())?;
 

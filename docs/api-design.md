@@ -195,7 +195,7 @@ type CreateServiceRequest = {
 
 ### `POST /api/services/upload` — アップロードによる新規登録(`sahai service create`専用)
 
-`multipart/form-data`。上記`POST /api/services`とは異なり、`source_type`/`image`/`compose_content`/`containers`はクライアントから指定しない。プロジェクトのソースコードそのもの(tar.gz)を送り、サーバー側でビルド+push+登録まで行う(要件定義書12章)。
+`multipart/form-data`。上記`POST /api/services`とは異なり、`source_type`/`image`/`compose_content`/`containers`はクライアントから指定しない。metadataの`compose_file`で使用するcomposeファイルを明示できる(省略時は既定の4つの名前から自動探索する)。プロジェクトのソースコードそのもの(tar.gz)を送り、サーバー側でビルド+push+登録まで行う(要件定義書12章)。
 
 **リクエストパート**:
 
