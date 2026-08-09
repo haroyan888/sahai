@@ -39,6 +39,8 @@ cd sahai
 ./setup.sh
 ```
 
+`Permission denied` になる場合は `bash setup.sh` で実行できます。
+
 Windowsは `.\setup.ps1` を実行してください。実行ポリシーで弾かれる場合は次のように起動します(スクリプトが恒久設定の変更を提案します)。
 
 ```powershell
