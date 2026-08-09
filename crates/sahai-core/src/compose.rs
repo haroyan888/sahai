@@ -126,6 +126,33 @@ pub struct ContainerDiff {
     pub kept: Vec<String>,
 }
 
+/// compose定義から各サービスの`ports:`を取り除いたYAMLを返す。
+///
+/// ホスト側ポートの公開は差配が一元管理するため、利用者が書いた公開設定は使わない。
+/// overrideでの上書きでは打ち消せない: docker composeは`ports`を置き換えではなく
+/// **合算**するので、両方が公開されてしまう(`image:`はスカラーなので置き換えになり、
+/// overrideで無効化できるのとは事情が違う)。そのためbase側の記述自体を落とす。
+///
+/// `volumes:`はマウント先(target)単位でマージされ差配の設定が勝つため、除去しない。
+pub fn strip_published_ports(compose_content: &str) -> Result<String, CoreError> {
+    let mut doc: serde_yaml::Value = serde_yaml::from_str(compose_content)
+        .map_err(|e| CoreError::Validation(format!("composeファイルの解析に失敗しました: {e}")))?;
+
+    if let Some(services) = doc
+        .get_mut("services")
+        .and_then(serde_yaml::Value::as_mapping_mut)
+    {
+        for (_, service) in services.iter_mut() {
+            if let Some(map) = service.as_mapping_mut() {
+                map.remove(serde_yaml::Value::String("ports".to_string()));
+            }
+        }
+    }
+
+    serde_yaml::to_string(&doc)
+        .map_err(|e| CoreError::Validation(format!("composeファイルの再構成に失敗しました: {e}")))
+}
+
 pub fn diff_container_names(existing: &[String], desired: &[String]) -> ContainerDiff {
     let existing_set: BTreeSet<&str> = existing.iter().map(String::as_str).collect();
     let desired_set: BTreeSet<&str> = desired.iter().map(String::as_str).collect();
@@ -302,5 +329,69 @@ services:
         assert_eq!(diff.added, vec!["app".to_string()]);
         assert_eq!(diff.removed, vec!["web".to_string()]);
         assert!(diff.kept.is_empty());
+    }
+
+    #[test]
+    fn strip_published_ports_removes_ports_from_every_service() {
+        let yaml = "services:
+  web:
+    image: nginx
+    ports:
+      - \"3000:3000\"
+  db:
+    image: postgres
+    ports:
+      - \"5432:5432\"
+";
+        let out = strip_published_ports(yaml).unwrap();
+        assert!(!out.contains("ports"), "{out}");
+        // サービス自体は残る
+        assert!(out.contains("web"));
+        assert!(out.contains("db"));
+        assert!(out.contains("nginx"));
+    }
+
+    #[test]
+    fn strip_published_ports_keeps_other_keys() {
+        let yaml = "services:
+  web:
+    image: nginx
+    ports:
+      - \"80:80\"
+    volumes:
+      - myvol:/cache
+    environment:
+      FOO: bar
+    expose:
+      - \"8080\"
+volumes:
+  myvol:
+";
+        let out = strip_published_ports(yaml).unwrap();
+        assert!(!out.contains("\"80:80\""), "{out}");
+        // volumesはtarget単位でマージされ差配の設定が勝つため残す
+        assert!(out.contains("myvol"), "{out}");
+        assert!(out.contains("FOO"), "{out}");
+        // exposeはホストに公開しないため残す
+        assert!(out.contains("expose"), "{out}");
+    }
+
+    #[test]
+    fn strip_published_ports_is_a_no_op_without_ports() {
+        let yaml = "services:
+  web:
+    image: nginx
+";
+        let out = strip_published_ports(yaml).unwrap();
+        assert!(out.contains("nginx"));
+    }
+
+    #[test]
+    fn strip_published_ports_rejects_broken_yaml() {
+        assert!(strip_published_ports(
+            "services:
+  - ["
+        )
+        .is_err());
     }
 }

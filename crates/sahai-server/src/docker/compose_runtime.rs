@@ -50,7 +50,11 @@ impl ComposeRuntime {
             .compose_content
             .as_deref()
             .ok_or_else(|| DockerError::Other("compose_contentが未設定です".to_string()))?;
-        tokio::fs::write(&base_path, compose_content)
+        // 利用者が書いたports:は落としてから書き出す。ホスト側ポートの公開は差配が
+        // 一元管理する。overrideでは打ち消せない(composeはportsを合算するため)
+        let base_yaml = sahai_core::compose::strip_published_ports(compose_content)
+            .map_err(DockerError::from_core)?;
+        tokio::fs::write(&base_path, &base_yaml)
             .await
             .map_err(|e| DockerError::Other(e.to_string()))?;
 

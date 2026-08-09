@@ -116,6 +116,10 @@ export function ServiceRegisterPage({ client, onCreated }: ServiceRegisterPagePr
             各サービスがそのままコンテナになります。ポート/ボリュームは登録後に設定します。
           </p>
           <p className="muted">
+            compose内の <code>ports:</code> は無視されます(公開ポートは登録後の設定が使われます)。
+            <code>env_file:</code> やボリュームで相対パスを指定したファイルは起動時に参照できません。
+          </p>
+          <p className="muted">
             <code>sahai service create</code> でビルドする場合、composeファイルはプロジェクトルート直下に置いてください
             (<code>build.context</code> もルート配下しか指せません)。
           </p>
