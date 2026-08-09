@@ -259,7 +259,7 @@ mod validate_tests {
                 name: "myapp".to_string(),
                 ports: vec![PortInput {
                     container_port: 80,
-                    host_port: 20001,
+                    host_port: Some(20001),
                     protocol: "tcp".to_string(),
                     is_http: true,
                 }],
@@ -281,13 +281,24 @@ mod validate_tests {
                 name: "app".to_string(),
                 ports: vec![PortInput {
                     container_port: 80,
-                    host_port: 20001,
+                    // is_httpのポートはホストに公開しないためhost_portを持たない
+                    host_port: None,
                     protocol: "tcp".to_string(),
                     is_http: true,
                 }],
                 volumes: vec![],
             }],
         }
+    }
+
+    /// host_portの検証は非HTTPポートにだけ効く。検証系のテストはこれを足して行う
+    fn with_non_http_port(req: &mut CreateServiceRequest, host_port: i64) {
+        req.containers[0].ports.push(PortInput {
+            container_port: 3306,
+            host_port: Some(host_port),
+            protocol: "tcp".to_string(),
+            is_http: false,
+        });
     }
 
     #[test]
@@ -358,33 +369,37 @@ mod validate_tests {
     #[test]
     fn accepts_host_port_from_any_band() {
         let mut req = image_ok();
-        req.containers[0].ports[0].host_port = 8080;
+        with_non_http_port(&mut req, 8080);
+        assert!(validate(&req).is_ok());
+    }
+
+    /// is_httpのポートはホストに公開しないため、host_portの検証対象外。
+    /// 予約ポートを指定しても無視される(そもそも公開されない)。
+    #[test]
+    fn ignores_host_port_on_http_ports() {
+        let mut req = image_ok();
+        req.containers[0].ports[0].host_port = Some(443);
         assert!(validate(&req).is_ok());
     }
 
     #[test]
     fn rejects_port_used_by_sahai_itself() {
         let mut req = image_ok();
-        req.containers[0].ports[0].host_port = 443;
+        with_non_http_port(&mut req, 443);
         assert_eq!(
             fields_of(&validate(&req)),
-            vec!["containers[0].ports[0].host_port"]
+            vec!["containers[0].ports[1].host_port"]
         );
     }
 
     #[test]
     fn rejects_duplicate_host_port_within_one_request() {
         let mut req = image_ok();
-        let dup = req.containers[0].ports[0].host_port;
-        req.containers[0].ports.push(PortInput {
-            container_port: 9000,
-            host_port: dup,
-            protocol: "tcp".to_string(),
-            is_http: false,
-        });
+        with_non_http_port(&mut req, 20005);
+        with_non_http_port(&mut req, 20005);
         assert_eq!(
             fields_of(&validate(&req)),
-            vec!["containers[0].ports[1].host_port"]
+            vec!["containers[0].ports[2].host_port"]
         );
     }
 
@@ -395,7 +410,7 @@ mod validate_tests {
             name: "mysql".to_string(),
             ports: vec![PortInput {
                 container_port: 3306,
-                host_port: 20002,
+                host_port: Some(20002),
                 protocol: "tcp".to_string(),
                 is_http: true,
             }],
@@ -419,11 +434,11 @@ mod validate_tests {
         // fail-fastにせず複数まとめて返す
         let mut req = image_ok();
         req.name = "BadName".to_string();
-        req.containers[0].ports[0].host_port = 80;
+        with_non_http_port(&mut req, 80);
         let result = validate(&req);
         let fields = fields_of(&result);
         assert!(fields.contains(&"name"));
-        assert!(fields.contains(&"containers[0].ports[0].host_port"));
+        assert!(fields.contains(&"containers[0].ports[1].host_port"));
     }
 
     #[test]
@@ -435,13 +450,13 @@ mod validate_tests {
             ports: vec![
                 PortInput {
                     container_port: 3306,
-                    host_port: 20002, // 1件目のポートは問題なし
+                    host_port: Some(20002), // 1件目のポートは問題なし
                     protocol: "tcp".to_string(),
                     is_http: false,
                 },
                 PortInput {
                     container_port: 3307,
-                    host_port: 443, // 差配自身が使う予約ポート
+                    host_port: Some(443), // 差配自身が使う予約ポート
                     protocol: "tcp".to_string(),
                     is_http: false,
                 },
@@ -460,7 +475,7 @@ mod tests {
     use crate::api::dto::{ContainerInput, CreateServiceRequest, PortInput};
     use crate::service::{registration::create, test_support::test_state};
 
-    fn image_request(name: &str, host_port: i64) -> CreateServiceRequest {
+    fn image_request(name: &str, host_port: Option<i64>) -> CreateServiceRequest {
         CreateServiceRequest {
             name: name.to_string(),
             source_type: "image".to_string(),
@@ -489,9 +504,11 @@ mod tests {
     async fn failed_registration_does_not_poison_the_connection_pool() {
         let state = test_state().await;
 
-        create(&state, image_request("first", 21001)).await.unwrap();
+        create(&state, image_request("first", Some(21001)))
+            .await
+            .unwrap();
 
-        let conflict = create(&state, image_request("second", 21001)).await;
+        let conflict = create(&state, image_request("second", Some(21001))).await;
         assert!(
             conflict.is_err(),
             "host_port重複は失敗するはず: {conflict:?}"
@@ -499,7 +516,7 @@ mod tests {
 
         // ここでプールのコネクションが汚染されていなければ、以降の正常な登録は
         // 問題なく完了するはず(acquire_timeout(3秒)で明確に失敗する設定済み)
-        let third = create(&state, image_request("third", 21002)).await;
+        let third = create(&state, image_request("third", Some(21002))).await;
         assert!(
             third.is_ok(),
             "直前の失敗がコネクションを汚染していないはず: {third:?}"
@@ -529,7 +546,7 @@ mod tests {
                     name: "web".to_string(),
                     ports: vec![PortInput {
                         container_port: 80,
-                        host_port: 20030,
+                        host_port: Some(20030),
                         protocol: "tcp".to_string(),
                         is_http: true,
                     }],

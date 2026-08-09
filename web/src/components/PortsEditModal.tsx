@@ -123,7 +123,7 @@ export function PortsEditModal({ containers, onSave, onClose }: PortsEditModalPr
             <div>
               <h4>ポート</h4>
               <p className="muted">
-                ホストポートは他のサービスと重複しない値を選びます。
+                ホストポートは他のサービスと重複しない値を選びます。HTTP公開したポートはTraefik経由で届くため、ホストポートは不要です。
                 「HTTP」を付けたポートが <code>&lt;サービス名&gt;.&lt;ドメイン&gt;</code> で公開されます(1コンテナに1つまで)。
               </p>
               {container.ports.length > 0 && (
@@ -145,19 +145,36 @@ export function PortsEditModal({ containers, onSave, onClose }: PortsEditModalPr
                       updatePort(containerIndex, portIndex, { container_port: Number(e.target.value) })
                     }
                   />
-                  <input
-                    type="number"
-                    aria-label={`${container.name}のホストポート`}
-                    title="外部からの接続先となるポート番号"
-                    value={port.host_port}
-                    onChange={(e) => updatePort(containerIndex, portIndex, { host_port: Number(e.target.value) })}
-                  />
+                  {port.is_http ? (
+                    // HTTP公開はTraefik経由で届くため、ホストにポートを開かない
+                    <span className="muted" style={{ fontSize: 12 }}>
+                      不要
+                    </span>
+                  ) : (
+                    <input
+                      type="number"
+                      aria-label={`${container.name}のホストポート`}
+                      title="外部からの接続先となるポート番号"
+                      value={port.host_port ?? ''}
+                      onChange={(e) =>
+                        updatePort(containerIndex, portIndex, {
+                          host_port: e.target.value === '' ? null : Number(e.target.value),
+                        })
+                      }
+                    />
+                  )}
                   <label className="field field-inline" title="このポートをサブドメイン経由で公開する(1コンテナにつき1つまで)">
                     <input
                       type="checkbox"
                       aria-label={`${container.name}のHTTP公開`}
                       checked={port.is_http ?? false}
-                      onChange={(e) => updatePort(containerIndex, portIndex, { is_http: e.target.checked })}
+                      onChange={(e) =>
+                        updatePort(containerIndex, portIndex, {
+                          is_http: e.target.checked,
+                          // HTTP公開に切り替えたらホストポートは使わない
+                          host_port: e.target.checked ? null : (port.host_port ?? 20000),
+                        })
+                      }
                     />
                   </label>
                   <button

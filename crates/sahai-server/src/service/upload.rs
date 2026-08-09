@@ -772,7 +772,7 @@ mod tests {
             }
         }
 
-        async fn register_image_service(state: &AppState, name: &str, host_port: i64) {
+        async fn register_image_service(state: &AppState, name: &str, host_port: Option<i64>) {
             registration::create(
                 state,
                 CreateServiceRequest {
@@ -811,7 +811,7 @@ mod tests {
         #[tokio::test]
         async fn rejects_when_registry_credentials_are_missing() {
             let state = test_state().await;
-            register_image_service(&state, "myapp", 21100).await;
+            register_image_service(&state, "myapp", Some(21100)).await;
             let archive = make_tar_gz(&[("Dockerfile", "FROM scratch\n")]);
 
             let result = update_from_archive(&state, "myapp", empty_metadata(), archive).await;
@@ -825,7 +825,7 @@ mod tests {
         #[tokio::test]
         async fn rejects_when_uploaded_project_shape_does_not_match_registered_source_type() {
             let state = test_state().await;
-            register_image_service(&state, "myapp", 21101).await;
+            register_image_service(&state, "myapp", Some(21101)).await;
             {
                 let mut settings = state.settings.write().await;
                 settings.registry_username = Some("u".to_string());

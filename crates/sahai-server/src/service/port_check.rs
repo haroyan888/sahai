@@ -28,24 +28,28 @@ pub fn collect_request_errors(containers: &[ContainerInput]) -> Vec<FieldError> 
     for (i, c) in containers.iter().enumerate() {
         for (j, p) in c.ports.iter().enumerate() {
             let field = field_path(i, j);
-            if let Err(e) = validation::validate_host_port(p.host_port) {
+            // is_httpのポートはホストに公開しないためhost_portを持たない。
+            // 指定されていても無視する(公開されない値を検証しても意味がない)
+            let Some(host_port) = p.host_port.filter(|_| !p.is_http) else {
+                continue;
+            };
+            if let Err(e) = validation::validate_host_port(host_port) {
                 errors.push(FieldError {
                     field,
                     message: e.to_string(),
                 });
                 continue;
             }
-            if let Some((_, first)) = seen.iter().find(|(port, _)| *port == p.host_port) {
+            if let Some((_, first)) = seen.iter().find(|(port, _)| *port == host_port) {
                 errors.push(FieldError {
                     field,
                     message: format!(
-                        "ポート{}はこのリクエスト内の{}と重複しています",
-                        p.host_port, first
+                        "ポート{host_port}はこのリクエスト内の{first}と重複しています"
                     ),
                 });
                 continue;
             }
-            seen.push((p.host_port, field));
+            seen.push((host_port, field));
         }
     }
     errors
@@ -61,13 +65,17 @@ pub async fn check_against_existing(
     let mut errors = Vec::new();
     for (i, c) in containers.iter().enumerate() {
         for (j, p) in c.ports.iter().enumerate() {
+            // is_httpのポートはホストに公開しないため衝突しようがない
+            let Some(host_port) = p.host_port.filter(|_| !p.is_http) else {
+                continue;
+            };
             if let Some(owner) =
-                ports::find_service_using_host_port(&mut *conn, p.host_port, exclude_service_id)
+                ports::find_service_using_host_port(&mut *conn, host_port, exclude_service_id)
                     .await?
             {
                 errors.push(FieldError {
                     field: field_path(i, j),
-                    message: format!("ポート{}はサービス'{}'が使用中です", p.host_port, owner),
+                    message: format!("ポート{host_port}はサービス'{owner}'が使用中です"),
                 });
             }
         }
@@ -91,7 +99,7 @@ mod tests {
                 .iter()
                 .map(|&host_port| PortInput {
                     container_port: 8080,
-                    host_port,
+                    host_port: Some(host_port),
                     protocol: "tcp".to_string(),
                     is_http: false,
                 })

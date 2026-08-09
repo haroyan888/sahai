@@ -129,7 +129,6 @@ pub mod test_support {
 
         let traefik = RouteWriter::new(
             config.traefik_dynamic_dir(),
-            "host.docker.internal".to_string(),
             "http://sahai-server:8080".to_string(),
             "letsencrypt".to_string(),
             settings.clone(),
@@ -180,7 +179,6 @@ pub mod test_support {
 
         let traefik = RouteWriter::new(
             config.traefik_dynamic_dir(),
-            "host.docker.internal".to_string(),
             "http://sahai-server:8080".to_string(),
             "letsencrypt".to_string(),
             settings.clone(),

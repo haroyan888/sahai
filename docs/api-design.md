@@ -98,7 +98,7 @@ type ServiceContainer = {
 type ServicePort = {
   id: number,
   container_port: number,
-  host_port: number,
+  host_port: number | null,                      // is_httpのポートはホストに公開しないためnull
   protocol: "tcp" | "udp",
   is_http: boolean,
 }
@@ -165,7 +165,7 @@ type CreateServiceRequest = {
     name: string,                                // 下記「containers[].nameの検証」参照
     ports?: {
       container_port: number,
-      host_port: number,
+      host_port: number | null,          // is_httpのポートはホストに公開しないためnull
       protocol?: "tcp" | "udp",                  // 省略時は "tcp"
       is_http?: boolean,                          // 省略時は false
     }[],
@@ -180,7 +180,7 @@ type CreateServiceRequest = {
 - `source_type=image` の場合: `containers`は要素1件のみ許可。`name`は`Service.name`と**完全一致必須**(不一致は`VALIDATION_ERROR`)。冗長に見えるが、POST/PUTのボディ形状をimage型・compose型で統一するためこの形にする(要件定義書6章の「image型もcompose型と同じ構造で扱う」方針を踏襲)
 - `source_type=compose` の場合: `containers[].name`に含まれる値は、`compose_content`をパースして得られるcomposeサービス名の**部分集合**でなければならない(それ以外の名前が含まれていたら`VALIDATION_ERROR`)。逆に、パースして得られたサービス名のうち`containers`に登場しないものは、ports/volumesが空の`ServiceContainer`として作成される(要件定義書6章「compose_contentの編集」の「新規追加されたサービス」と同じ扱い。明示は任意)
 
-**処理**: サービス名バリデーション → (compose型なら)composeサービス名バリデーション(6章・12章共通ロジック) → `containers[].name`の整合性チェック → `host_port`の検証(有効値・予約ポート・リクエスト内重複・既存サービスとの重複) → `is_http`が全コンテナを通してサービスにつき最大1件であることのチェック(マイグレーションのコメント通りDBでは強制されないためアプリ層で検証。違反時は`VALIDATION_ERROR`) → DB挿入(`BEGIN IMMEDIATE`トランザクション、7章「排他制御」) → Traefikルート書き出し。
+**処理**: サービス名バリデーション → (compose型なら)composeサービス名バリデーション(6章・12章共通ロジック) → `containers[].name`の整合性チェック → `host_port`の検証(有効値・予約ポート・リクエスト内重複・既存サービスとの重複。`is_http`のポートは対象外) → `is_http`が全コンテナを通してサービスにつき最大1件であることのチェック(マイグレーションのコメント通りDBでは強制されないためアプリ層で検証。違反時は`VALIDATION_ERROR`) → DB挿入(`BEGIN IMMEDIATE`トランザクション、7章「排他制御」) → Traefikルート書き出し。
 
 **レスポンス**: `201 Created`、ボディは`ServiceDetail`。
 

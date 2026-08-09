@@ -7,7 +7,7 @@ pub struct ServicePortRow {
     pub id: i64,
     pub container_id: i64,
     pub container_port: i64,
-    pub host_port: i64,
+    pub host_port: Option<i64>,
     pub protocol: String,
     pub is_http: i64,
 }
@@ -29,7 +29,7 @@ impl TryFrom<ServicePortRow> for ServicePort {
 
 pub struct NewPort {
     pub container_port: i64,
-    pub host_port: i64,
+    pub host_port: Option<i64>,
     pub protocol: Protocol,
     pub is_http: bool,
 }

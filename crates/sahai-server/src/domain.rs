@@ -152,7 +152,9 @@ pub struct ServicePort {
     pub id: i64,
     pub container_id: i64,
     pub container_port: i64,
-    pub host_port: i64,
+    /// is_httpのポートはホストに公開しないためNone。
+    /// それ以外は手動指定した公開ポート。
+    pub host_port: Option<i64>,
     pub protocol: Protocol,
     pub is_http: bool,
 }

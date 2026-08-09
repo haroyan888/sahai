@@ -137,12 +137,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // サービスの転送先の両方に使う。sahai-serverは常に
     // 自分自身を指すため環境変数での上書きは不要な固定値にしている
     let app_internal_url = "http://sahai-server:8080".to_string();
-    let docker_host_address = std::env::var("SAHAI_DOCKER_HOST_ADDRESS")
-        .unwrap_or_else(|_| "host.docker.internal".to_string());
 
     let traefik = RouteWriter::new(
         config.traefik_dynamic_dir(),
-        docker_host_address,
         app_internal_url,
         // traefik.yml参照: certificatesResolversの名前はDNSプロバイダによらず固定
         // (プロバイダの切り替えはcompose.yamlのcommand引数/環境変数で行う)

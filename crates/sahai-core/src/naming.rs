@@ -5,6 +5,12 @@
 
 use std::path::Path;
 
+/// 土台の3コンテナとサービスのコンテナが共有するDockerネットワーク名。
+/// compose.yamlで`name:`を指定して固定してある(既定ではプロジェクト名が
+/// 前置され、クローン先のディレクトリ名に依存してしまうため)。
+/// Traefikはこのネットワーク越しにコンテナ名を解決して直接転送する。
+pub const SAHAI_NETWORK: &str = "sahai";
+
 /// 実際のDockerコンテナ名: `svc-{ServiceContainer.id}`。
 /// サービス名の変更やcompose_content編集による再作成の影響を受けない不変ID。
 pub fn container_docker_name(container_id: i64) -> String {

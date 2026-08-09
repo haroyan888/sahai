@@ -10,7 +10,8 @@ export type Protocol = 'tcp' | 'udp'
 export interface ServicePort {
   id: number
   container_port: number
-  host_port: number
+  /** HTTP公開のポートはホストに公開しないためnull */
+  host_port: number | null
   protocol: Protocol
   is_http: boolean
 }
@@ -56,7 +57,8 @@ export interface ServiceDetail extends Service {
 
 export interface PortInput {
   container_port: number
-  host_port: number
+  /** HTTP公開のポートはホストに公開しないためnull */
+  host_port: number | null
   protocol?: Protocol
   is_http?: boolean
 }
@@ -172,7 +174,8 @@ export interface ApiErrorBody {
 }
 
 export interface NotServicePort {
-  host_port: number
+  /** HTTP公開のポートはホストに公開しないためnull */
+  host_port: number | null
   container_port: number
   protocol: Protocol
 }

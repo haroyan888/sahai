@@ -181,7 +181,7 @@ mod tests {
                     name: "app".to_string(),
                     ports: vec![PortInput {
                         container_port: 80,
-                        host_port: 20020,
+                        host_port: Some(20020),
                         protocol: "tcp".to_string(),
                         is_http: true,
                     }],
@@ -191,7 +191,7 @@ mod tests {
                     name: "admin".to_string(),
                     ports: vec![PortInput {
                         container_port: 81,
-                        host_port: 20021,
+                        host_port: Some(20021),
                         protocol: "tcp".to_string(),
                         is_http: false,
                     }],
@@ -219,7 +219,7 @@ mod tests {
                     name: "admin".to_string(),
                     ports: vec![PortInput {
                         container_port: 81,
-                        host_port: 20021,
+                        host_port: Some(20021),
                         protocol: "tcp".to_string(),
                         is_http: true,
                     }],
@@ -253,7 +253,7 @@ mod tests {
                         name: "app".to_string(),
                         ports: vec![PortInput {
                             container_port: 80,
-                            host_port: 20020,
+                            host_port: Some(20020),
                             protocol: "tcp".to_string(),
                             is_http: false,
                         }],
@@ -263,7 +263,7 @@ mod tests {
                         name: "admin".to_string(),
                         ports: vec![PortInput {
                             container_port: 81,
-                            host_port: 20021,
+                            host_port: Some(20021),
                             protocol: "tcp".to_string(),
                             is_http: true,
                         }],
