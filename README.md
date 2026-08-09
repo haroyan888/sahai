@@ -63,7 +63,7 @@ SAHAI_IMAGE=myuser/sahai-server:v0.1.0 ./setup.sh
 ./update.sh     # Windowsは .\update.ps1
 ```
 
-`git pull` してから土台の3コンテナ(traefik / sahai-server / registry)を新しいイメージで作り直します。設定・証明書・サービスのデータには触れません。
+`git pull` してから土台の3コンテナ(traefik / sahai-server / registry)を新しいイメージで作り直します。設定・証明書・サービスのデータには触れません。DNS認証情報はsahai-serverが起動時に自動で再適用するため、更新後の操作は不要です。
 
 **登録済みサービスは更新中も動き続けます。** これらはcomposeの管理外なので、土台の作り直しでは停止しません。一時的に止まるのは管理画面とレジストリだけです。
 

@@ -137,8 +137,11 @@ function Step3-PullOrBuildImage {
 # ============================================================
 function Step4-ComposeUp {
     Write-Log 'コンテナを起動しています...'
+    # --force-recreateで必ず作り直す。`up -d`だけだと、ネットワーク名の変更のように
+    # コンテナ設定が変わったのに再作成が走らず、古い設定を参照したまま起動を試みて
+    # 失敗することがある。更新時はどのみち作り直すので副作用は無い。
     # compose.yamlでtraefik/registryのタグが変わっていれば、ここで自動的に取得される
-    Invoke-Compose @('up', '-d')
+    Invoke-Compose @('up', '-d', '--force-recreate')
 }
 
 # ============================================================

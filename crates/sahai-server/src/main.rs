@@ -74,6 +74,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     };
     let is_configured = !initial_settings.domain.trim().is_empty();
+    // 起動時のTraefik整合で使う。この後initial_settingsはSharedSettingsへ移る
+    let acme_dns_provider = initial_settings.dns_provider.clone();
+    let acme_email = initial_settings.acme_email.clone();
 
     // 初期設定を第三者に先取りされないよう、未設定の間だけワンタイムトークンを発行し
     // POST /api/setupで提示を要求する。値はログに出さない
@@ -168,6 +171,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     if let Err(e) = admin_routes_result {
         tracing::warn!("管理画面用の静的Traefikルートの書き出しに失敗しました: {e}");
+    }
+
+    // DNS認証情報はcompose.yamlではなくここからbollard経由で渡すため、
+    // `docker compose up`でTraefikが作り直されると失われる。設定を保存し直すまで
+    // 気付けず証明書の更新時に初めて失敗するので、起動のたびに整合させる。
+    // 一致していれば何もしない(毎回作り直すとTraefikが瞬断する)。
+    // ここで失敗してもサーバー自体は動かせるため、警告に留めて起動を続ける
+    if !acme_dns_provider.trim().is_empty() {
+        match traefik::reconcile_traefik(
+            &docker.docker,
+            &config.env_file_path,
+            &acme_dns_provider,
+            &acme_email,
+        )
+        .await
+        {
+            Ok(true) => tracing::info!("Traefikの設定が現在値と食い違っていたため作り直しました"),
+            Ok(false) => tracing::debug!("Traefikの設定は最新です"),
+            Err(e) => tracing::warn!(
+                "Traefikの設定を整合できませんでした。証明書の更新に失敗する場合は                 Web UIの「DNS/証明書設定」を保存し直してください: {e}"
+            ),
+        }
     }
 
     let inspector_for_health = docker::Inspector::new(
