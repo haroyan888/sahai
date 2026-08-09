@@ -120,6 +120,7 @@ Let's Encryptの**DNS-01チャレンジ**を使用する(証明書取得自体�
 - 未登録サブドメインの受け皿ルート(6章参照)には`*.<ベースドメイン>`の**ワイルドカード証明書**を、管理画面・レジストリ・個々のサービスのサブドメインには`Host()`ルールから自動導出される個別証明書を使う。レジストリが2段のサブドメインでも、DNS-01で個別に取得するためワイルドカードの階層は問題にならない
 - DNSプロバイダはTraefikが内部で使う[lego](https://github.com/go-acme/lego)が対応するもの(100以上)から`SAHAI_DNS_PROVIDER`で選択する。**既定値は無い**(特定プロバイダに固定しない方針)。未設定でも起動はでき、その場合Traefikは自己署名証明書のまま動作する。Web UIの「DNS/証明書設定」画面で選択・保存すると、その時点でTraefikコンテナが認証情報付きで再作成される
 - Let's Encryptは**同じ識別子の組に対して7日間で5枚**という発行上限を持つ。取得済みの証明書は`SAHAI_DATA_ROOT/traefik/acme/acme.json`に保存され、`clean.sh`/`clean.ps1`は既定でこれを残す(消すと初期化のたびに1枚消費し、数日間再取得できなくなる)。繰り返し検証する場合は`SAHAI_ACME_CA_SERVER`でstagingへ向けられる
+- **sahai-serverは起動時にTraefikコンテナの状態を点検し、DBと`.sahai.env`の現在値と食い違っていれば作り直す。** 認証情報はcompose.yamlではなくsahai-serverがbollard経由で渡す設計のため、`docker compose up`でTraefikが作り直されると認証情報が失われる。設定を保存し直すまで気付けないうえ、証明書の更新時になって初めて失敗するため、起動のたびに整合させる。一致していれば何もしない(毎回作り直すと不要な瞬断が起きる)
 - 選んだプロバイダが要求する認証情報は、そのプロバイダが指定する環境変数名(例: Cloudflareなら`CF_DNS_API_TOKEN`)で`.sahai.env`(`SAHAI_DATA_ROOT`直下)に保存される。対応プロバイダと必要な環境変数の一覧: https://go-acme.github.io/lego/dns/index.html
 
 ### HTTP→HTTPSリダイレクト

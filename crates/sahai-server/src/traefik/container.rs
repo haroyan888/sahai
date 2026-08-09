@@ -104,6 +104,48 @@ pub async fn recreate_traefik(
     wait_until_running(docker, &name).await
 }
 
+/// 起動時の整合。TraefikコンテナのEnv/Cmdが現在の設定と一致していなければ作り直す。
+///
+/// 認証情報はcompose.yamlではなくsahai-serverがbollard経由で渡す設計のため、
+/// `docker compose up`でTraefikが作り直されると失われる。設定を保存し直すまで
+/// 気付けず、証明書の更新時になって初めて失敗するので、起動のたびに整合させる。
+///
+/// 一致していれば何もしない。毎回作り直すとsahai-serverの再起動のたびに
+/// Traefikが瞬断し、稼働中のサービスへのアクセスが切れてしまう。
+///
+/// 戻り値は再作成したかどうか。
+pub async fn reconcile_traefik(
+    docker: &Docker,
+    env_file: &Path,
+    dns_provider: &str,
+    acme_email: &str,
+) -> Result<bool, ContainerError> {
+    let container_id = find_traefik_container(docker).await?;
+    let inspect = docker
+        .inspect_container(&container_id, None::<InspectContainerOptions>)
+        .await?;
+    let desired = build_config(docker, &inspect, env_file, dns_provider, acme_email).await?;
+
+    let current = inspect.config.clone().unwrap_or_default();
+    if env_matches(current.env.as_deref(), desired.env.as_deref())
+        && current.cmd.as_deref() == desired.cmd.as_deref()
+    {
+        return Ok(false);
+    }
+
+    recreate_traefik(docker, env_file, dns_provider, acme_email).await?;
+    Ok(true)
+}
+
+/// Envは順序が保証されない(build_configがHashMapから組み立てるため)ので、
+/// 集合として比較する。
+fn env_matches(current: Option<&[String]>, desired: Option<&[String]>) -> bool {
+    let to_set = |v: Option<&[String]>| -> std::collections::BTreeSet<String> {
+        v.unwrap_or_default().iter().cloned().collect()
+    };
+    to_set(current) == to_set(desired)
+}
+
 async fn find_traefik_container(docker: &Docker) -> Result<String, ContainerError> {
     let mut filters: HashMap<&str, Vec<&str>> = HashMap::new();
     filters.insert("label", vec![TRAEFIK_SERVICE_LABEL]);
@@ -221,6 +263,42 @@ async fn wait_until_running(docker: &Docker, name: &str) -> Result<(), Container
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn env(entries: &[&str]) -> Vec<String> {
+        entries.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Envはbuild_configがHashMapから組み立てるため順序が保証されない。
+    /// 順序で比較すると、内容が同じでも毎回再作成が走りTraefikが瞬断する。
+    #[test]
+    fn env_matches_ignores_order() {
+        let a = env(&["A=1", "B=2"]);
+        let b = env(&["B=2", "A=1"]);
+        assert!(env_matches(Some(&a), Some(&b)));
+    }
+
+    #[test]
+    fn env_matches_detects_added_or_changed_entries() {
+        let current = env(&["A=1"]);
+        assert!(!env_matches(Some(&current), Some(&env(&["A=1", "B=2"]))));
+        assert!(!env_matches(Some(&current), Some(&env(&["A=2"]))));
+    }
+
+    /// composeがTraefikを作り直すとDNS認証情報が落ちる。この状態を検出できないと
+    /// 証明書の更新時まで気付けない。
+    #[test]
+    fn env_matches_detects_lost_credentials() {
+        let after_compose_recreate = env(&["PATH=/usr/bin"]);
+        let desired = env(&["PATH=/usr/bin", "CF_DNS_API_TOKEN=secret"]);
+        assert!(!env_matches(Some(&after_compose_recreate), Some(&desired)));
+    }
+
+    #[test]
+    fn env_matches_treats_none_as_empty() {
+        assert!(env_matches(None, Some(&[])));
+        assert!(env_matches(None, None));
+        assert!(!env_matches(None, Some(&env(&["A=1"]))));
+    }
 
     /// `docker compose up`はDNS設定を尋ねる前に実行されるため、複製元コンテナのCmdは
     /// `...acme.email=`・`...dnschallenge.provider=`が空文字列のまま焼き付いている。
