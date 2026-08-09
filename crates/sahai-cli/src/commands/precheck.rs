@@ -8,8 +8,14 @@ use std::path::Path;
 /// `context`直下のcomposeファイルを読み、`build:`を持つ各サービスについて
 /// サービス名の文字種とレジストリタグ長を検証する。composeファイルが無ければ
 /// image型プロジェクトとみなし、何も検証せず成功を返す。
-pub fn validate_compose_build_targets(service_name: &str, context: &Path) -> Result<(), String> {
-    let Some(compose_path) = sahai_core::compose::find_compose_file(context) else {
+pub fn validate_compose_build_targets(
+    service_name: &str,
+    context: &Path,
+    compose_file: Option<&str>,
+) -> Result<(), String> {
+    let Some(compose_path) = sahai_core::compose::resolve_compose_file(context, compose_file)
+        .map_err(|e| e.to_string())?
+    else {
         return Ok(());
     };
     let content = std::fs::read_to_string(&compose_path).map_err(|e| e.to_string())?;
@@ -52,21 +58,21 @@ mod tests {
     #[test]
     fn composeファイルが無ければ成功する() {
         let dir = temp_dir("nocompose");
-        assert!(validate_compose_build_targets("myapp", &dir).is_ok());
+        assert!(validate_compose_build_targets("myapp", &dir, None).is_ok());
     }
 
     #[test]
     fn build指定の無いサービスは検証対象外() {
         let dir = temp_dir("nobuild");
         write_compose(&dir, "services:\n  DB_BAD:\n    image: postgres:16\n");
-        assert!(validate_compose_build_targets("myapp", &dir).is_ok());
+        assert!(validate_compose_build_targets("myapp", &dir, None).is_ok());
     }
 
     #[test]
     fn 不正なcomposeサービス名を弾く() {
         let dir = temp_dir("badname");
         write_compose(&dir, "services:\n  Web_App:\n    build: .\n");
-        let err = validate_compose_build_targets("myapp", &dir).unwrap_err();
+        let err = validate_compose_build_targets("myapp", &dir, None).unwrap_err();
         assert!(err.contains("Web_App"), "{err}");
     }
 
@@ -75,7 +81,7 @@ mod tests {
         let dir = temp_dir("longtag");
         write_compose(&dir, "services:\n  web:\n    build: .\n");
         let long_name = "a".repeat(200);
-        let err = validate_compose_build_targets(&long_name, &dir).unwrap_err();
+        let err = validate_compose_build_targets(&long_name, &dir, None).unwrap_err();
         assert!(err.contains("web"), "{err}");
     }
 
@@ -86,6 +92,6 @@ mod tests {
             &dir,
             "services:\n  web:\n    build: .\n  db:\n    image: postgres:16\n",
         );
-        assert!(validate_compose_build_targets("myapp", &dir).is_ok());
+        assert!(validate_compose_build_targets("myapp", &dir, None).is_ok());
     }
 }

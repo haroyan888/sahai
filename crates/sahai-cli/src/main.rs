@@ -53,6 +53,9 @@ enum ContainerAction {
         name: String,
         #[arg(long, default_value = ".")]
         context: PathBuf,
+        /// 使用するcomposeファイル。省略時は既定の名前を探す
+        #[arg(long)]
+        file: Option<String>,
         #[arg(long = "build-arg", value_parser = parse_key_val)]
         build_arg: Vec<(String, String)>,
         #[arg(long)]
@@ -72,6 +75,9 @@ enum ServiceAction {
         name: String,
         #[arg(long, default_value = ".")]
         context: PathBuf,
+        /// 使用するcomposeファイル。省略時は既定の名前を探す
+        #[arg(long)]
+        file: Option<String>,
         #[arg(long = "build-arg", value_parser = parse_key_val)]
         build_arg: Vec<(String, String)>,
         #[arg(long)]
@@ -85,6 +91,9 @@ enum ServiceAction {
         name: String,
         #[arg(long, default_value = ".")]
         context: PathBuf,
+        /// 使用するcomposeファイル。省略時は既定の名前を探す
+        #[arg(long)]
+        file: Option<String>,
         #[arg(long = "build-arg", value_parser = parse_key_val)]
         build_arg: Vec<(String, String)>,
         #[arg(long)]
@@ -160,6 +169,7 @@ async fn run(cli: Cli) -> Result<(), String> {
                 ContainerAction::Push {
                     name,
                     context,
+                    file,
                     build_arg,
                     platform,
                     deploy,
@@ -178,6 +188,7 @@ async fn run(cli: Cli) -> Result<(), String> {
                 PushArgs {
                     name,
                     context,
+                    compose_file: file,
                     build_args: build_arg,
                     platform,
                     deploy,
@@ -197,6 +208,7 @@ async fn run(cli: Cli) -> Result<(), String> {
                 ServiceAction::Create {
                     name,
                     context,
+                    file,
                     build_arg,
                     platform,
                 } => {
@@ -205,6 +217,7 @@ async fn run(cli: Cli) -> Result<(), String> {
                         CreateArgs {
                             name,
                             context,
+                            compose_file: file,
                             build_args: build_arg,
                             platform,
                         },
@@ -214,6 +227,7 @@ async fn run(cli: Cli) -> Result<(), String> {
                 ServiceAction::Update {
                     name,
                     context,
+                    file,
                     build_arg,
                     platform,
                     deploy,
@@ -223,6 +237,7 @@ async fn run(cli: Cli) -> Result<(), String> {
                         UpdateArgs {
                             name,
                             context,
+                            compose_file: file,
                             build_args: build_arg,
                             platform,
                             deploy,
@@ -296,6 +311,7 @@ mod tests {
                     ContainerAction::Push {
                         name,
                         context,
+                        file: _,
                         build_arg,
                         platform,
                         deploy,
@@ -350,6 +366,7 @@ mod tests {
                     ServiceAction::Create {
                         name,
                         context,
+                        file: _,
                         build_arg,
                         platform,
                     },
@@ -399,6 +416,7 @@ mod tests {
                     ServiceAction::Update {
                         name,
                         context,
+                        file: _,
                         build_arg,
                         platform,
                         deploy,

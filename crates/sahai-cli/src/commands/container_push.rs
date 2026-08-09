@@ -10,6 +10,8 @@ use crate::api_client::ApiClient;
 pub struct PushArgs {
     pub name: String,
     pub context: PathBuf,
+    /// 使用するcomposeファイル。省略時は既定の名前から探す
+    pub compose_file: Option<String>,
     pub build_args: Vec<(String, String)>,
     pub platform: Option<String>,
     pub deploy: bool,
@@ -27,7 +29,9 @@ pub async fn run(client: &ApiClient, registry_url: &str, args: PushArgs) -> Resu
     let service = existing.map_err(|e| describe_lookup_error(&args.name, &e))?;
 
     // 2. compose_content配下の存在確認とsource_typeとの照合
-    let compose_path = sahai_core::compose::find_compose_file(&args.context);
+    let compose_path =
+        sahai_core::compose::resolve_compose_file(&args.context, args.compose_file.as_deref())
+            .map_err(|e| e.to_string())?;
     let is_compose_dir = compose_path.is_some();
     let is_compose_registered = service.source_type == "compose";
     if is_compose_dir != is_compose_registered {
