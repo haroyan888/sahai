@@ -23,6 +23,8 @@ Docker host (1台)
                                  登録サービスごとの個別ファイル。.envは登録済みenv varsを平文で含むため600。要件定義書4章「秘匿値の保存」)
 ```
 
+compose型サービスの`base.yml`は、DBの`compose_content`をそのまま書き出すのではなく`ports:`を除去したものを書き出す(要件定義書7章)。overrideでは打ち消せないため、base側を落とす必要がある。
+
 `traefik`/`sahai-server`/`registry` の3つは [compose.yaml](../compose.yaml) で一括管理する、いわば「差配を動かすための土台」。この3つ以外に、sahai-server自身が`docker run`/`docker compose`でユーザー登録済みサービスのコンテナを起動・停止する(要件定義書7章)。
 
 Web UI(React SPA)とAPIはどちらも`sahai-server`が同一コンテナ内で配信する(単一ホスト運用でのコンテナ数・リソース削減のため。1.5章参照)。両者は当然同一オリジンになるため、Web UI側からのAPI呼び出しでCORSを意識せず開発できる(ただし別オリジン、例えばVite開発サーバーからの直接アクセスも許容するようCORSは緩めに設定済み。[api-design.md](./api-design.md) 1章参照)。
