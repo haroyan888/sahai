@@ -38,6 +38,8 @@ export interface Service {
   compose_content: string | null
   env_vars: Record<string, string>
   status: ServiceStatus
+  /** 起動に失敗した理由(Docker標準エラー出力)。起動成功でnullに戻る */
+  last_error: string | null
   health_status: HealthStatus
   last_health_check_at: string | null
   created_at: string

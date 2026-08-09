@@ -99,8 +99,10 @@ jobs:
       - name: Lint
         run: npx oxlint --deny-warnings
 
+      # ルートのtsconfig.jsonはfiles:[]の参照専用。--noEmitだと対象ゼロで素通りする。
+      # -bで参照先(src配下、テストファイル含む)まで検査する
       - name: Typecheck
-        run: npx tsc --noEmit
+        run: npx tsc -b
 
       - name: Test
         run: npm test

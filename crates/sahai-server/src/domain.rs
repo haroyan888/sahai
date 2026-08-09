@@ -129,6 +129,9 @@ pub struct Service {
     pub compose_content: Option<String>,
     pub env_vars: serde_json::Value,
     pub status: ServiceStatus,
+    /// 起動に失敗した理由(Docker実行時の標準エラー出力)。起動成功でNoneに戻る。
+    /// statusがerrorでない間は常にNone。
+    pub last_error: Option<String>,
     pub health_status: HealthStatus,
     pub last_health_check_at: Option<String>,
     pub created_at: String,
@@ -310,6 +313,7 @@ mod tests {
                 compose_content: None,
                 env_vars: serde_json::json!({}),
                 status: ServiceStatus::Running,
+                last_error: None,
                 health_status: HealthStatus::Unknown,
                 last_health_check_at: None,
                 created_at: "2026-01-01T00:00:00.000Z".to_string(),
