@@ -12,6 +12,7 @@ use bollard::image::CreateImageOptions;
 use bollard::models::{HostConfig, PortBinding};
 use bollard::Docker;
 use futures_util::StreamExt;
+use sahai_core::naming::SAHAI_NETWORK;
 
 use crate::domain::ServiceDetail;
 
@@ -63,13 +64,17 @@ impl ImageRuntime {
         for port in &container.ports {
             let key = format!("{}/{}", port.container_port, port.protocol.as_str());
             exposed_ports.insert(key.clone(), HashMap::new());
-            port_bindings.insert(
-                key,
-                Some(vec![PortBinding {
-                    host_ip: None,
-                    host_port: Some(port.host_port.to_string()),
-                }]),
-            );
+            // is_httpのポートはhost_portを持たない。Traefikがsahaiネットワーク越しに
+            // コンテナ名で直接到達するため、ホストへ公開する必要がない
+            if let Some(host_port) = port.host_port {
+                port_bindings.insert(
+                    key,
+                    Some(vec![PortBinding {
+                        host_ip: None,
+                        host_port: Some(host_port.to_string()),
+                    }]),
+                );
+            }
         }
 
         let binds: Vec<String> = container
@@ -103,11 +108,21 @@ impl ImageRuntime {
             ..Default::default()
         };
 
+        // 土台と同じネットワークへ参加させる。Traefikはここでコンテナ名を解決する
+        let mut endpoints = HashMap::new();
+        endpoints.insert(
+            SAHAI_NETWORK.to_string(),
+            bollard::models::EndpointSettings::default(),
+        );
+
         let config = Config {
             image: Some(image),
             env: Some(env),
             exposed_ports: Some(exposed_ports),
             host_config: Some(host_config),
+            networking_config: Some(bollard::container::NetworkingConfig {
+                endpoints_config: endpoints,
+            }),
             ..Default::default()
         };
 
@@ -283,7 +298,7 @@ mod tests {
             id: 1,
             container_id: 42,
             container_port: 8080,
-            host_port: 20001,
+            host_port: Some(20001),
             protocol: Protocol::Tcp,
             is_http: true,
         }];
@@ -357,7 +372,7 @@ mod tests {
                 id: 1,
                 container_id: 42,
                 container_port: 80,
-                host_port: 21100,
+                host_port: Some(21100),
                 protocol: Protocol::Tcp,
                 is_http: true,
             }],
@@ -470,7 +485,9 @@ mod tests {
                     id: 1,
                     container_id,
                     container_port: 80,
-                    host_port,
+                    // このe2eはホスト経由でHTTP到達を確かめるため、あえて公開する
+                    // (is_httpのポートは通常host_portを持たない)
+                    host_port: Some(host_port),
                     protocol: Protocol::Tcp,
                     is_http: true,
                 }],

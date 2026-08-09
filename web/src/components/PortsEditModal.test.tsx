@@ -15,7 +15,11 @@ function containers(): ServiceContainer[] {
       name: 'app',
       health_status: 'unknown',
       last_health_check_at: null,
-      ports: [{ id: 100, container_port: 80, host_port: 20001, protocol: 'tcp', is_http: true }],
+      ports: [
+        // HTTP公開のポートはホストに公開しないためhost_portを持たない
+        { id: 100, container_port: 80, host_port: null, protocol: 'tcp', is_http: true },
+        { id: 101, container_port: 3306, host_port: 20001, protocol: 'tcp', is_http: false },
+      ],
       volumes: [{ id: 200, container_path: '/data' }],
     },
     {
@@ -52,7 +56,15 @@ describe('PortsEditModal', () => {
   it('既存のポート値を入力欄に表示する', () => {
     render(<PortsEditModal containers={containers()} onSave={vi.fn()} onClose={vi.fn()} />)
     expect(screen.getByDisplayValue('80')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('3306')).toBeInTheDocument()
     expect(screen.getByDisplayValue('20001')).toBeInTheDocument()
+  })
+
+  it('HTTP公開のポートにはホストポート欄を出さない', () => {
+    render(<PortsEditModal containers={containers()} onSave={vi.fn()} onClose={vi.fn()} />)
+    // 非HTTPのポート1件分だけ入力欄がある
+    expect(screen.getAllByLabelText(/appのホストポート/)).toHaveLength(1)
+    expect(screen.getByText('不要')).toBeInTheDocument()
   })
 
   it('既存のボリューム値を入力欄に表示する', () => {
@@ -66,11 +78,11 @@ describe('PortsEditModal', () => {
     render(<PortsEditModal containers={containers()} onSave={vi.fn()} onClose={vi.fn()} />)
 
     const appSection = screen.getByTestId('container-section-app')
-    expect(within(appSection).getAllByTestId('port-row')).toHaveLength(1)
+    expect(within(appSection).getAllByTestId('port-row')).toHaveLength(2)
 
     await user.click(within(appSection).getByRole('button', { name: 'ポートを追加' }))
 
-    expect(within(appSection).getAllByTestId('port-row')).toHaveLength(2)
+    expect(within(appSection).getAllByTestId('port-row')).toHaveLength(3)
     // 追加時点でダイアログは1つのままである(サブモーダルを開かない)
     expect(screen.getAllByRole('dialog')).toHaveLength(1)
   })
@@ -82,7 +94,7 @@ describe('PortsEditModal', () => {
     const appSection = screen.getByTestId('container-section-app')
     await user.click(within(appSection).getAllByRole('button', { name: 'ポートを削除' })[0])
 
-    expect(within(appSection).queryAllByTestId('port-row')).toHaveLength(0)
+    expect(within(appSection).queryAllByTestId('port-row')).toHaveLength(1)
   })
 
   it('保存ボタンでonSaveにContainerInput形式(name/ports/volumes)を渡す', async () => {
@@ -95,7 +107,10 @@ describe('PortsEditModal', () => {
     expect(onSave).toHaveBeenCalledWith([
       expect.objectContaining({
         name: 'app',
-        ports: [expect.objectContaining({ container_port: 80, host_port: 20001, protocol: 'tcp', is_http: true })],
+        ports: [
+          expect.objectContaining({ container_port: 80, host_port: null, protocol: 'tcp', is_http: true }),
+          expect.objectContaining({ container_port: 3306, host_port: 20001, protocol: 'tcp', is_http: false }),
+        ],
         volumes: [{ container_path: '/data' }],
       }),
       expect.objectContaining({

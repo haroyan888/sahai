@@ -150,6 +150,11 @@ services:
 
 networks:
   sahai:
+    # 名前を固定する。既定ではdocker composeがプロジェクト名
+    # (クローン先のディレクトリ名)を前置するため、サービス側からexternalとして
+    # 参照できなくなる。サービスのコンテナはこのネットワークに参加し、
+    # Traefikがコンテナ名で直接到達する
+    name: sahai
     driver: bridge
 
 volumes:

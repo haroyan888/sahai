@@ -5,6 +5,8 @@ use std::path::Path;
 
 use serde::Serialize;
 
+use sahai_core::naming::SAHAI_NETWORK;
+
 use crate::domain::ServiceDetail;
 
 use super::DockerError;
@@ -12,11 +14,20 @@ use super::DockerError;
 #[derive(Debug, Serialize)]
 struct OverrideFile {
     services: BTreeMap<String, OverrideService>,
+    networks: BTreeMap<String, ExternalNetwork>,
+}
+
+/// 土台側が作成済みのネットワークを参照する。ここで作らせないためexternalにする
+#[derive(Debug, Serialize)]
+struct ExternalNetwork {
+    external: bool,
 }
 
 #[derive(Debug, Default, Serialize)]
 struct OverrideService {
     container_name: String,
+    /// 土台と同じネットワークへ参加させる。Traefikはここでコンテナ名を解決する
+    networks: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     image: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -54,16 +65,15 @@ pub fn generate_override_yaml(
             None
         };
 
+        // is_httpのポートはhost_portを持たない。Traefikがsahaiネットワーク越しに
+        // コンテナ名で直接到達するため、ホストへ公開する必要がない
         let ports = container
             .ports
             .iter()
-            .map(|p| {
-                format!(
-                    "{}:{}/{}",
-                    p.host_port,
-                    p.container_port,
-                    p.protocol.as_str()
-                )
+            .filter_map(|p| {
+                p.host_port.map(|host_port| {
+                    format!("{}:{}/{}", host_port, p.container_port, p.protocol.as_str())
+                })
             })
             .collect();
 
@@ -88,11 +98,17 @@ pub fn generate_override_yaml(
                 ports,
                 volumes,
                 env_file: vec![env_file_path.display().to_string()],
+                networks: vec![SAHAI_NETWORK.to_string()],
             },
         );
     }
 
-    let file = OverrideFile { services };
+    let mut networks = BTreeMap::new();
+    networks.insert(
+        SAHAI_NETWORK.to_string(),
+        ExternalNetwork { external: true },
+    );
+    let file = OverrideFile { services, networks };
     serde_yaml::to_string(&file).map_err(|e| DockerError::Other(e.to_string()))
 }
 
@@ -165,7 +181,7 @@ mod tests {
                         id: 100,
                         container_id: 10,
                         container_port: 80,
-                        host_port: 20010,
+                        host_port: Some(20010),
                         protocol: Protocol::Tcp,
                         is_http: true,
                     }],

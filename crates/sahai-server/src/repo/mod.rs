@@ -349,7 +349,7 @@ mod tests {
             container_id,
             &ports::NewPort {
                 container_port: 8080,
-                host_port: 20001,
+                host_port: Some(20001),
                 protocol: Protocol::Tcp,
                 is_http: true,
             },
@@ -438,7 +438,7 @@ mod tests {
             c1,
             &ports::NewPort {
                 container_port: 80,
-                host_port: 20005,
+                host_port: Some(20005),
                 protocol: Protocol::Tcp,
                 is_http: true,
             },
@@ -467,7 +467,7 @@ mod tests {
             c2,
             &ports::NewPort {
                 container_port: 81,
-                host_port: 20005,
+                host_port: Some(20005),
                 protocol: Protocol::Tcp,
                 is_http: false,
             },
@@ -539,7 +539,7 @@ mod tests {
             c1,
             &ports::NewPort {
                 container_port: 80,
-                host_port: 8080,
+                host_port: Some(8080),
                 protocol: Protocol::Tcp,
                 is_http: true,
             },

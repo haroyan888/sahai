@@ -10,7 +10,9 @@ fn default_protocol() -> String {
 #[derive(Debug, Deserialize)]
 pub struct PortInput {
     pub container_port: i64,
-    pub host_port: i64,
+    /// is_httpのポートはホストに公開しないため省略できる。
+    #[serde(default)]
+    pub host_port: Option<i64>,
     #[serde(default = "default_protocol")]
     pub protocol: String,
     #[serde(default)]

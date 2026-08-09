@@ -23,7 +23,7 @@ pub struct NotServiceQuery {
 
 #[derive(Debug, Serialize, PartialEq)]
 pub struct NotServicePortDto {
-    pub host_port: i64,
+    pub host_port: Option<i64>,
     pub container_port: i64,
     pub protocol: String,
 }
@@ -95,7 +95,7 @@ mod tests {
 
     use super::*;
 
-    fn port(host_port: i64, container_port: i64, protocol: Protocol) -> ServicePort {
+    fn port(host_port: Option<i64>, container_port: i64, protocol: Protocol) -> ServicePort {
         ServicePort {
             id: 1,
             container_id: 1,
@@ -108,13 +108,13 @@ mod tests {
 
     #[test]
     fn found_response_includes_name_and_ports() {
-        let dto = found_response("mysql", &[port(20001, 3306, Protocol::Tcp)]);
+        let dto = found_response("mysql", &[port(Some(20001), 3306, Protocol::Tcp)]);
         assert!(dto.found);
         assert_eq!(dto.name, Some("mysql".to_string()));
         assert_eq!(
             dto.ports,
             Some(vec![NotServicePortDto {
-                host_port: 20001,
+                host_port: Some(20001),
                 container_port: 3306,
                 protocol: "tcp".to_string(),
             }])

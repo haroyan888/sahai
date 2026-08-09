@@ -199,7 +199,11 @@ mod tests {
         }))
     }
 
-    fn compose_service_detail(service_id: i64, container_id: i64, host_port: i64) -> ServiceDetail {
+    fn compose_service_detail(
+        service_id: i64,
+        container_id: i64,
+        host_port: Option<i64>,
+    ) -> ServiceDetail {
         ServiceDetail {
             service: Service {
                 id: service_id,
@@ -256,7 +260,7 @@ mod tests {
                 .as_nanos()
         ));
         let runtime = ComposeRuntime::new(test_settings(), data_root.clone());
-        let service = compose_service_detail(9101, 9102, 21103);
+        let service = compose_service_detail(9101, 9102, Some(21103));
 
         let stop_result = runtime.stop(&service).await;
         let _ = tokio::fs::remove_dir_all(&data_root).await;
@@ -278,7 +282,7 @@ mod tests {
                 .as_nanos()
         ));
         let runtime = ComposeRuntime::new(test_settings(), data_root.clone());
-        let service = compose_service_detail(9001, 9002, 21102);
+        let service = compose_service_detail(9001, 9002, Some(21102));
 
         let up_result = runtime.start(&service).await;
 

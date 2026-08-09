@@ -117,7 +117,7 @@ mod router_tests {
                     name: "mysql".to_string(),
                     ports: vec![crate::api::dto::PortInput {
                         container_port: 3306,
-                        host_port: 20050,
+                        host_port: Some(20050),
                         protocol: "tcp".to_string(),
                         is_http: false,
                     }],

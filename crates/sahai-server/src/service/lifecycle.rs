@@ -191,7 +191,7 @@ mod tests {
                     name: "e2eweb".to_string(),
                     ports: vec![PortInput {
                         container_port: 80,
-                        host_port: 21101,
+                        host_port: Some(21101),
                         protocol: "tcp".to_string(),
                         is_http: true,
                     }],
@@ -258,7 +258,7 @@ mod tests {
                     name: "e2ewarn".to_string(),
                     ports: vec![PortInput {
                         container_port: 80,
-                        host_port: 21102,
+                        host_port: Some(21102),
                         protocol: "tcp".to_string(),
                         is_http: true,
                     }],

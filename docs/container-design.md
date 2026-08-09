@@ -23,6 +23,8 @@ Docker host (1台)
                                  登録サービスごとの個別ファイル。.envは登録済みenv varsを平文で含むため600。要件定義書4章「秘匿値の保存」)
 ```
 
+サービスのコンテナは土台と同じ`sahai`ネットワークに参加し、Traefikは`http://svc-<ServiceContainer.id>:<container_port>`へ直接転送する(要件定義書6章)。`is_http`のポートはホストに公開しない。`sahai`ネットワークは[compose.yaml](../compose.yaml)で`name: sahai`と固定してある。固定しないとdocker composeがプロジェクト名(クローン先のディレクトリ名)を前置し、サービス側から`external`として参照できないため。
+
 compose型サービスの`base.yml`は、DBの`compose_content`をそのまま書き出すのではなく`ports:`と`env_file:`を除去したものを書き出す(要件定義書7章)。どちらもoverrideでは打ち消せない(合算されるため)ので、base側を落とす必要がある。
 
 `traefik`/`sahai-server`/`registry` の3つは [compose.yaml](../compose.yaml) で一括管理する、いわば「差配を動かすための土台」。この3つ以外に、sahai-server自身が`docker run`/`docker compose`でユーザー登録済みサービスのコンテナを起動・停止する(要件定義書7章)。

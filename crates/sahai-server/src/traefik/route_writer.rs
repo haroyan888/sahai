@@ -134,10 +134,6 @@ struct Server {
 
 pub struct RouteWriter {
     dynamic_dir: PathBuf,
-    /// TraefikコンテナからDockerホストのpublishedポートへ到達するためのアドレス
-    /// (例: host.docker.internal。TraefikコンテナからDockerホストの公開ポートへ
-    /// 到達するための名前。compose.yamlのtraefikに extra_hosts で解決させている)
-    docker_host_address: String,
     /// `is_http`ポートを持たないサービスの転送先、および管理画面(Web UI+API)自体の
     /// 転送先。sahai-server自身のdocker-compose上のアドレス(例: `http://sahai-server:8080`)。
     /// Web UI(SPA)はsahai-serverが自分自身で配信し(`tower-http::ServeDir`)、
@@ -154,14 +150,12 @@ pub struct RouteWriter {
 impl RouteWriter {
     pub fn new(
         dynamic_dir: PathBuf,
-        docker_host_address: String,
         app_internal_url: String,
         cert_resolver: String,
         settings: SharedSettings,
     ) -> Self {
         RouteWriter {
             dynamic_dir,
-            docker_host_address,
             app_internal_url,
             cert_resolver,
             settings,
@@ -415,15 +409,21 @@ impl RouteWriter {
         }
     }
 
+    /// is_httpポートを持つコンテナへ、sahaiネットワーク越しにコンテナ名で直接向ける。
+    /// ホスト経由にしないのは、`is_http`ポートをホストへ公開しないため
+    /// (公開すると`https://<name>.<domain>`とは別に平文の到達経路ができる)。
     fn resolve_target_url(&self, service: &ServiceDetail) -> String {
-        let http_port = service
+        let http_target = service
             .containers
             .iter()
-            .flat_map(|c| c.ports.iter())
-            .find(|p| p.is_http);
+            .find_map(|c| c.ports.iter().find(|p| p.is_http).map(|p| (c, p)));
 
-        match http_port {
-            Some(port) => format!("http://{}:{}", self.docker_host_address, port.host_port),
+        match http_target {
+            Some((container, port)) => format!(
+                "http://{}:{}",
+                sahai_core::naming::container_docker_name(container.container.id),
+                port.container_port
+            ),
             None => self.app_internal_url.clone(),
         }
     }
@@ -465,7 +465,6 @@ mod tests {
     fn writer(dynamic_dir: PathBuf) -> RouteWriter {
         RouteWriter::new(
             dynamic_dir,
-            "host.docker.internal".to_string(),
             "http://sahai-server:8080".to_string(),
             "cloudflare".to_string(),
             test_settings("example.com", true),
@@ -504,12 +503,13 @@ mod tests {
         }
     }
 
-    fn http_port(host_port: i64) -> ServicePort {
+    /// is_httpのポートはホストに公開しないためhost_portを持たない
+    fn http_port() -> ServicePort {
         ServicePort {
             id: 100,
             container_id: 10,
             container_port: 80,
-            host_port,
+            host_port: None,
             protocol: Protocol::Tcp,
             is_http: true,
         }
@@ -520,7 +520,7 @@ mod tests {
             id: 101,
             container_id: 10,
             container_port: 3306,
-            host_port,
+            host_port: Some(host_port),
             protocol: Protocol::Tcp,
             is_http: false,
         }
@@ -537,20 +537,19 @@ mod tests {
         dir
     }
 
+    /// is_httpポートはホストに公開しないため、コンテナ名で直接向ける。
+    /// ホスト経由に戻すと平文の到達経路ができるため、この期待値は動かさないこと。
     #[test]
-    fn resolves_to_docker_host_when_http_port_present() {
+    fn resolves_to_container_name_when_http_port_present() {
         let w = writer(PathBuf::from("/unused"));
-        let service = service_with_ports(vec![non_http_port(20002), http_port(20001)]);
-        assert_eq!(
-            w.resolve_target_url(&service),
-            "http://host.docker.internal:20001"
-        );
+        let service = service_with_ports(vec![non_http_port(3306), http_port()]);
+        assert_eq!(w.resolve_target_url(&service), "http://svc-10:80");
     }
 
     #[test]
     fn resolves_to_own_app_when_no_http_port() {
         let w = writer(PathBuf::from("/unused"));
-        let service = service_with_ports(vec![non_http_port(20002)]);
+        let service = service_with_ports(vec![non_http_port(3306)]);
         assert_eq!(w.resolve_target_url(&service), "http://sahai-server:8080");
     }
 
@@ -565,7 +564,7 @@ mod tests {
     async fn write_route_creates_file_with_expected_content() {
         let dir = temp_dir("write");
         let w = writer(dir.clone());
-        let service = service_with_ports(vec![http_port(20001)]);
+        let service = service_with_ports(vec![http_port()]);
 
         w.write_route(&service).await.unwrap();
 
@@ -583,7 +582,7 @@ mod tests {
         );
         assert_eq!(
             parsed["http"]["services"]["myapp"]["loadBalancer"]["servers"][0]["url"].as_str(),
-            Some("http://host.docker.internal:20001")
+            Some("http://svc-10:80")
         );
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
@@ -594,17 +593,18 @@ mod tests {
         let dir = temp_dir("idempotent");
         let w = writer(dir.clone());
 
-        w.write_route(&service_with_ports(vec![http_port(20001)]))
+        w.write_route(&service_with_ports(vec![http_port()]))
             .await
             .unwrap();
-        w.write_route(&service_with_ports(vec![http_port(20099)]))
+        w.write_route(&service_with_ports(vec![http_port()]))
             .await
             .unwrap();
 
         let path = dir.join("myapp.example.com.yml");
         let content = tokio::fs::read_to_string(&path).await.unwrap();
-        assert!(content.contains("20099"));
-        assert!(!content.contains("20001"));
+        // 2回書いても1件のルートに収束し、転送先はコンテナ名のまま
+        assert!(content.contains("http://svc-10:80"), "{content}");
+        assert_eq!(content.matches("http://svc-10:80").count(), 1, "{content}");
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
@@ -622,7 +622,7 @@ mod tests {
     async fn remove_route_deletes_existing_file() {
         let dir = temp_dir("remove_existing");
         let w = writer(dir.clone());
-        w.write_route(&service_with_ports(vec![http_port(20001)]))
+        w.write_route(&service_with_ports(vec![http_port()]))
             .await
             .unwrap();
 
@@ -779,7 +779,6 @@ mod tests {
         let dir = temp_dir("static_admin_custom_domain");
         let w = RouteWriter::new(
             dir.clone(),
-            "host.docker.internal".to_string(),
             "http://sahai-server:8080".to_string(),
             "cloudflare".to_string(),
             test_settings("example.com", true),
@@ -844,7 +843,7 @@ mod tests {
     async fn write_route_restricts_to_websecure_when_https_redirect_enabled() {
         let dir = temp_dir("https_redirect_on_route");
         let w = writer(dir.clone());
-        w.write_route(&service_with_ports(vec![http_port(20001)]))
+        w.write_route(&service_with_ports(vec![http_port()]))
             .await
             .unwrap();
 
@@ -871,12 +870,11 @@ mod tests {
         let dir = temp_dir("https_redirect_off_route");
         let w = RouteWriter::new(
             dir.clone(),
-            "host.docker.internal".to_string(),
             "http://sahai-server:8080".to_string(),
             "cloudflare".to_string(),
             test_settings("example.com", false),
         );
-        w.write_route(&service_with_ports(vec![http_port(20001)]))
+        w.write_route(&service_with_ports(vec![http_port()]))
             .await
             .unwrap();
 
@@ -950,7 +948,6 @@ mod tests {
         let dir = temp_dir("https_redirect_off_static");
         let w = RouteWriter::new(
             dir.clone(),
-            "host.docker.internal".to_string(),
             "http://sahai-server:8080".to_string(),
             "cloudflare".to_string(),
             test_settings("example.com", false),

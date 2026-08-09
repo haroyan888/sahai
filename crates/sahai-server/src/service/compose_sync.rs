@@ -128,7 +128,7 @@ mod tests {
             admin_id,
             &crate::repo::ports::NewPort {
                 container_port: 81,
-                host_port: 20099,
+                host_port: Some(20099),
                 protocol: crate::domain::Protocol::Tcp,
                 is_http: false,
             },
