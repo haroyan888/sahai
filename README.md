@@ -57,6 +57,20 @@ pwsh -ExecutionPolicy Bypass -File .\setup.ps1
 SAHAI_IMAGE=myuser/sahai-server:v0.1.0 ./setup.sh
 ```
 
+### 更新する
+
+```bash
+./update.sh     # Windowsは .\update.ps1
+```
+
+`git pull` してから土台の3コンテナ(traefik / sahai-server / registry)を新しいイメージで作り直します。設定・証明書・サービスのデータには触れません。
+
+**登録済みサービスは更新中も動き続けます。** これらはcomposeの管理外なので、土台の作り直しでは停止しません。一時的に止まるのは管理画面とレジストリだけです。
+
+起動時にDBマイグレーションが走るため、**事前にDBのバックアップを取ります**(`/var/sahai/backups/` に5世代)。マイグレーションに失敗して起動しない場合は、バックアップを書き戻してください。
+
+手元のソースのまま作り直すだけなら `--no-pull`(Windowsは `-NoPull`)を付けます。
+
 ### やり直す
 
 ```bash

@@ -11,6 +11,7 @@ Docker host (1台)
 ├─ registry           (compose.yaml管理下。registry:2)
 └─ /var/sahai/         (ホスト上の永続化データルート。要件定義書3章。ディレクトリ自体は700)
     ├─ db/sahai.sqlite3         (600)
+    ├─ backups/                 (update.sh/ps1が更新前に取るDBのコピー。最新5世代)
     ├─ .sahai.env               (DNSプロバイダ認証情報のブリッジファイル。600。4章参照)
     ├─ services/<id>/...        (sahai-serverが管理するサービスのボリューム)
     ├─ traefik/dynamic/         (sahai-serverが書き出す動的ルート定義。per-serviceの
