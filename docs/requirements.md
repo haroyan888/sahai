@@ -222,8 +222,10 @@ Web UI(SPA)は`window.location.hostname`からアクセス元のサブドメイ�
 ## 7. 起動・停止・削除
 
 - **起動(image型)**: `docker pull` → `docker run -d --name svc-{ServiceContainer.id} --restart unless-stopped -p {host_port}:{container_port}/{protocol} (ポート数分) -v ... --env-file ... {image}`
-- **compose_content中の`ports:`は起動時に除去する**。ホスト側ポートの公開は差配が一元管理するため。overrideでの上書きでは打ち消せない: docker composeは`ports`を置き換えではなく**合算**するため、利用者が書いた公開設定が残ったまま差配の設定が追加され、意図しないポートがホストに開く。衝突検証もDBを見るだけなので、この経路で開いたポートはすり抜ける。そのためbase側の記述自体を落とす(`image:`をoverrideで無効化できるのは、スカラーであり置き換えになるため)
-  - `volumes:`は除去しない。`ports`と違い**マウント先(target)単位でマージ**され、差配が管理するtargetは差配の設定が勝つ。利用者が別targetに足したボリュームはそのまま残る
+- **compose_content中の`ports:`と`env_file:`は起動時に除去する**。どちらも差配が一元管理する項目であり、overrideでの上書きでは打ち消せないため、base側の記述自体を落とす。docker composeはこの2つを置き換えではなく**合算**するので、利用者の記述が残ったまま差配の設定が追加されてしまう(`image:`をoverrideで無効化できるのは、スカラーであり置き換えになるため)
+  - `ports`: 利用者の公開設定が残ると意図しないポートがホストに開く。衝突検証はDBを見るだけなので、この経路で開いたポートはすり抜ける
+  - `env_file`: 参照先は利用者のプロジェクト内にある相対パスであることが多いが、起動時のカレントは`compose-projects/<id>/`であり、そこにはbase.yml・override.yml・`.env`しか置かれない。存在しないファイルを指したまま起動しようとして失敗する。環境変数はWeb UIで設定したものだけを注入する
+  - `volumes:`は除去しない。上の2つと違い**マウント先(target)単位でマージ**され、差配が管理するtargetは差配の設定が勝つ。利用者が別targetに足したボリュームはそのまま残る
 - **起動(compose型)**: `docker compose pull`(overrideで`image:`を注入済みのため、build:の有無に関わらず全サービスが対象) → base composeに、登録済みの`ServiceContainer`ごとのポート・ボリューム・env varsを対応するcomposeサービスへ注入し、かつ全コンテナ(build:の有無に関わらず)に `container_name: svc-{ServiceContainer.id}` を注入したoverrideファイルを生成し `docker compose -f base.yml -f override.yml -p svc-{Service.id} up -d --remove-orphans`
   - 環境変数は**全コンテナに適用**する。登録されたenv varsからControl planeが `.env` ファイルを生成しプロジェクトルートに配置(変数展開用)、かつoverride生成時に全サービスへ `env_file` を注入する(実行時のコンテナへの反映用)。DBコンテナ等、HTTPを喋らないコンテナにも環境変数(例: `MYSQL_ROOT_PASSWORD`)が必要なケースに対応するため
   - `--remove-orphans` により、`compose_content` 編集で削除されたサービスに対応する古いコンテナを確実に片付ける
