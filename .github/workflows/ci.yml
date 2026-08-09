@@ -53,7 +53,7 @@ jobs:
       # cloneしても実行できない(実際に踏んだ)。gitのindex上のモードを直接見る
       - name: Shell scripts are executable
         run: |
-          for f in setup.sh clean.sh; do
+          for f in setup.sh clean.sh update.sh; do
             mode=$(git ls-files -s "$f" | cut -d' ' -f1)
             if [ "$mode" != "100755" ]; then
               echo "::error file=$f::実行ビットがありません (mode=$mode)。'git update-index --chmod=+x $f' を実行してください"
@@ -62,13 +62,13 @@ jobs:
           done
 
       - name: Shell syntax
-        run: bash -n setup.sh && bash -n clean.sh
+        run: bash -n setup.sh && bash -n clean.sh && bash -n update.sh
 
       - name: PowerShell syntax
         shell: pwsh
         run: |
           $failed = $false
-          foreach ($f in @('setup.ps1', 'clean.ps1')) {
+          foreach ($f in @('setup.ps1', 'clean.ps1', 'update.ps1')) {
             $errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f), [ref]$null, [ref]$errors) | Out-Null
             if ($errors.Count) { $failed = $true; $errors | ForEach-Object { Write-Host "::error file=$f::$($_.Message)" } }
