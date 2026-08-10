@@ -17,6 +17,37 @@ pub struct ComposeRuntime {
     sahai_data_root: PathBuf,
 }
 
+/// `docker compose down`が使えないときの後始末。コンテナ名は`svc-{id}`で決まるため、
+/// compose定義を読まずに削除できる。composeが作ったネットワークも消す。
+///
+/// 存在しないものへの削除は失敗するが、結果として消えていればよいので無視する。
+async fn force_remove_containers(
+    service: &ServiceDetail,
+    project: &str,
+) -> Result<(), DockerError> {
+    for container in &service.containers {
+        let name = sahai_core::naming::container_docker_name(container.container.id);
+        let output = Command::new("docker")
+            .args(["rm", "-f", &name])
+            .output()
+            .await
+            .map_err(|e| DockerError::ComposeExec(e.to_string()))?;
+        if !output.status.success() {
+            tracing::debug!(
+                "コンテナ{name}の削除をスキップしました: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+    }
+
+    // composeが作った既定ネットワーク。コンテナを消した後でなければ削除できない
+    let _ = Command::new("docker")
+        .args(["network", "rm", &format!("{project}_default")])
+        .output()
+        .await;
+    Ok(())
+}
+
 impl ComposeRuntime {
     pub fn new(settings: SharedSettings, sahai_data_root: PathBuf) -> Self {
         ComposeRuntime {
@@ -164,16 +195,29 @@ impl ContainerLifecycle for ComposeRuntime {
             return Ok(());
         }
 
-        self.run_compose(&[
-            "-f",
-            &base_path.display().to_string(),
-            "-f",
-            &override_path.display().to_string(),
-            "-p",
-            &project,
-            "down",
-        ])
-        .await
+        let down = self
+            .run_compose(&[
+                "-f",
+                &base_path.display().to_string(),
+                "-f",
+                &override_path.display().to_string(),
+                "-p",
+                &project,
+                "down",
+            ])
+            .await;
+
+        if let Err(e) = down {
+            // composeは設定エラーがあると何もせず失敗する。compose_contentの書き方を
+            // 誤っているだけでサービスを消す手段が無くなってしまうため、DBが把握して
+            // いるコンテナ名で直接削除へ切り替える
+            tracing::warn!(
+                "サービス{}のdocker compose downに失敗しました。コンテナを直接削除します: {e}",
+                service.service.name
+            );
+            force_remove_containers(service, &project).await?;
+        }
+        Ok(())
     }
 }
 
@@ -267,6 +311,63 @@ mod tests {
 
         stop_result
             .expect("一度もstartしていないcomposeサービスに対するstopはエラーにならず成功するべき");
+    }
+
+    /// compose定義が壊れているとdocker compose downは何もせず失敗する。
+    /// フォールバックが無いと、書き方を誤った時点でサービスを消す手段が無くなる。
+    #[tokio::test]
+    #[ignore = "requires a running Docker daemon and the docker compose CLI plugin"]
+    async fn e2e_stop_falls_back_to_direct_removal_when_compose_is_invalid() {
+        let data_root = std::env::temp_dir().join(format!(
+            "sahai_compose_e2e_invalid_{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let runtime = ComposeRuntime::new(test_settings(), data_root.clone());
+        let service = compose_service_detail(9200, 9201, None);
+
+        runtime.start(&service).await.unwrap();
+
+        // 起動後にcomposeを壊れた状態へ差し替える。network_modeとnetworksの同時指定は
+        // 設定エラーとなり、downまで拒否される
+        let base_path = data_root
+            .join("compose-projects")
+            .join("9200")
+            .join("base.yml");
+        tokio::fs::write(
+            &base_path,
+            "services:
+  app:
+    image: alpine:3.20
+    network_mode: host
+",
+        )
+        .await
+        .unwrap();
+
+        let stop_result = runtime.stop(&service).await;
+
+        let remaining = tokio::process::Command::new("docker")
+            .args([
+                "ps",
+                "-a",
+                "--filter",
+                "name=^svc-9201$",
+                "--format",
+                "{{.Names}}",
+            ])
+            .output()
+            .await
+            .unwrap();
+        let _ = tokio::fs::remove_dir_all(&data_root).await;
+
+        stop_result.expect("compose定義が壊れていてもstopは成功するべき");
+        assert!(
+            String::from_utf8_lossy(&remaining.stdout).trim().is_empty(),
+            "フォールバックでコンテナが削除されるべき"
+        );
     }
 
     /// 実Dockerデーモン+`docker compose`に対する結合テスト。

@@ -116,7 +116,7 @@ export function ServiceRegisterPage({ client, onCreated }: ServiceRegisterPagePr
             各サービスがそのままコンテナになります。ポート/ボリュームは登録後に設定します。
           </p>
           <p className="muted">
-            compose内の <code>ports:</code> と <code>env_file:</code> は無視されます。
+            compose内の <code>ports:</code>・<code>env_file:</code>・<code>network_mode:</code> は無視されます。
             公開ポートと環境変数は、この画面で登録した後の設定が使われます。
             <code>environment:</code> に直接書いた値はそのまま残ります。
           </p>
