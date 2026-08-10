@@ -239,12 +239,14 @@ Web UI(SPA)は`window.location.hostname`からアクセス元のサブドメイ�
 - **compose_content中の`ports:`と`env_file:`は起動時に除去する**。どちらも差配が一元管理する項目であり、overrideでの上書きでは打ち消せないため、base側の記述自体を落とす。docker composeはこの2つを置き換えではなく**合算**するので、利用者の記述が残ったまま差配の設定が追加されてしまう(`image:`をoverrideで無効化できるのは、スカラーであり置き換えになるため)
   - `ports`: 利用者の公開設定が残ると意図しないポートがホストに開く。衝突検証はDBを見るだけなので、この経路で開いたポートはすり抜ける
   - `env_file`: 参照先は利用者のプロジェクト内にある相対パスであることが多いが、起動時のカレントは`compose-projects/<id>/`であり、そこにはbase.yml・override.yml・`.env`しか置かれない。存在しないファイルを指したまま起動しようとして失敗する。環境変数はWeb UIで設定したものだけを注入する
-  - `volumes:`は除去しない。上の2つと違い**マウント先(target)単位でマージ**され、差配が管理するtargetは差配の設定が勝つ。利用者が別targetに足したボリュームはそのまま残る
+  - `network_mode`: 差配は全コンテナに`networks: [sahai]`を注入する。composeは`network_mode`と`networks`の同時指定を**設定エラー**として扱い、`up`だけでなく`down`まで拒否するため、サービスが削除できなくなる。そもそも`network_mode: host`等ではTraefikがコンテナ名で到達できず差配の routing が成立しないため、除去して差配のネットワークを使わせる
+  - `volumes:`は除去しない。上の3つと違い**マウント先(target)単位でマージ**され、差配が管理するtargetは差配の設定が勝つ。利用者が別targetに足したボリュームはそのまま残る
 - **起動(compose型)**: `docker compose pull`(overrideで`image:`を注入済みのため、build:の有無に関わらず全サービスが対象) → base composeに、登録済みの`ServiceContainer`ごとのポート・ボリューム・env varsを対応するcomposeサービスへ注入し、かつ全コンテナ(build:の有無に関わらず)に `container_name: svc-{ServiceContainer.id}` を注入したoverrideファイルを生成し `docker compose -f base.yml -f override.yml -p svc-{Service.id} up -d --remove-orphans`
   - 環境変数は**全コンテナに適用**する。登録されたenv varsからControl planeが `.env` ファイルを生成しプロジェクトルートに配置(変数展開用)、かつoverride生成時に全サービスへ `env_file` を注入する(実行時のコンテナへの反映用)。DBコンテナ等、HTTPを喋らないコンテナにも環境変数(例: `MYSQL_ROOT_PASSWORD`)が必要なケースに対応するため
   - `--remove-orphans` により、`compose_content` 編集で削除されたサービスに対応する古いコンテナを確実に片付ける
 - **停止**: `docker stop svc-{ServiceContainer.id}`(image型)。compose型は `docker compose -p svc-{Service.id} down`
 - **更新**: 停止 → 新イメージで起動(ダウンタイムあり、Blue-Green等は行わない)
+- **停止・削除はcompose定義が壊れていても完遂する**。`docker compose down`は設定エラーがあると何もせず失敗するため、失敗した場合はDBが把握しているコンテナ名(`svc-{ServiceContainer.id}`)を使って直接削除へ切り替える。これが無いと、composeの書き方を誤った時点でサービスを消す手段が無くなる
 - **起動失敗時のstatus**: `docker run`/`docker compose up`が失敗した場合、`status`を`error`に設定し、**失敗理由を`last_error`に保存する**。理由はDocker実行時の標準エラー出力であり、これが無いと利用者は`docker logs`まで降りないと原因が分からない。次回の起動が成功した時点でクリアする。表示が壊れないよう保存時に一定長で打ち切る。成功時は`running`、明示的な停止時は`stopped`とする。ヘルスチェックの結果によって`status`が変化することはない(`status`はライフサイクル操作の成否のみを表し、`health_status`とは完全に独立している)
 - **コンテナ・プロジェクトの命名方針**: 実際のDockerコンテナ名は `svc-{ServiceContainer.id}`、composeプロジェクト名は `svc-{Service.id}` という不変の数値IDベースの識別子を使用する。これにより`Service.name`(サービス名)を変更しても、実行中のコンテナ・composeプロジェクトの実体には一切影響しない。Web UI/CLIでの**表示上**は `ServiceContainer.name`(image型はサービス名、compose型はcompose.yamlで定義されたサービス名)を用いる。内部識別子(`svc-{id}`)はユーザーに意識させない
 - **Traefikルートの再生成**: start/restart時、Control planeはその時点の`is_http`ポート・`host_port`の状態からTraefikルート定義ファイルを冪等に再生成する(既に存在すれば上書きする)。登録時・名前変更時の即時書き出しと合わせて、ルートは常に最新のDB状態を反映する

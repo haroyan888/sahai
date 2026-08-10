@@ -176,10 +176,14 @@ pub fn resolve_compose_file(
 /// - `env_file`: 参照先は利用者のプロジェクト内の相対パスであることが多いが、
 ///   起動時のカレントにはbase.yml・override.yml・`.env`しか無く、存在しない
 ///   ファイルを指したまま起動しようとして失敗する
+/// - `network_mode`: 差配は全コンテナに`networks: [sahai]`を注入する。composeは
+///   `network_mode`との同時指定を設定エラーとして扱い、`up`だけでなく`down`まで
+///   拒否するため、サービスを削除できなくなる。そもそも`network_mode: host`等では
+///   Traefikがコンテナ名で到達できず差配のroutingが成立しない
 ///
 /// `volumes`は含めない。マウント先(target)単位でマージされ差配の設定が勝つため、
 /// 利用者が別targetへ足した分をそのまま活かせる。
-const SAHAI_MANAGED_SERVICE_KEYS: [&str; 2] = ["ports", "env_file"];
+const SAHAI_MANAGED_SERVICE_KEYS: [&str; 3] = ["ports", "env_file", "network_mode"];
 
 /// compose定義から差配が管理するキーを取り除いたYAMLを返す。
 pub fn strip_managed_keys(compose_content: &str) -> Result<String, CoreError> {
@@ -530,5 +534,23 @@ volumes:
         let err = resolve_compose_file(&dir, Some("../outside-compose.yaml")).unwrap_err();
         assert!(err.to_string().contains("プロジェクトルート配下"), "{err}");
         let _ = std::fs::remove_file(&outside);
+    }
+
+    /// network_modeが残るとcomposeがnetworksとの同時指定を設定エラーとし、
+    /// upだけでなくdownまで拒否してサービスを削除できなくなる。
+    #[test]
+    fn strip_managed_keys_removes_network_mode() {
+        let yaml = "services:
+  web:
+    image: nginx
+    network_mode: host
+  db:
+    image: postgres
+    network_mode: \"service:web\"
+";
+        let out = strip_managed_keys(yaml).unwrap();
+        assert!(!out.contains("network_mode"), "{out}");
+        assert!(!out.contains("host"), "{out}");
+        assert!(out.contains("nginx"), "{out}");
     }
 }
