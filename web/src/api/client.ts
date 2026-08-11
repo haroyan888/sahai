@@ -6,6 +6,7 @@ import type {
   CreateServiceRequest,
   DnsConfig,
   HealthResponse,
+  LogLine,
   RegistryConfig,
   RegistryStatusResponse,
   Service,
@@ -52,6 +53,68 @@ export function parseApiError(err: unknown): { fields: ApiErrorField[]; message:
   return { fields: err.fields ?? [], message: err.message }
 }
 
+/** SSEの1イベント。`event:`が無ければ仕様どおり`message`として扱う。 */
+export interface SseEvent {
+  event: string
+  data: string
+}
+
+/**
+ * SSEのバイト列を、イベント単位に切り出す。フレームの境界はチャンクの境界と
+ * 一致しないため(1チャンクに複数イベント、イベントの途中で切れる、のどちらもある)、
+ * 受け取った分を貯めて空行で区切る。
+ *
+ * ブラウザの`EventSource`を使わないのはAuthorizationヘッダーを付けられないため。
+ * トークンをクエリ文字列へ逃がすとURLがアクセスログ・履歴に残る。
+ */
+export function createSseParser(onEvent: (event: SseEvent) => void) {
+  let buffer = ''
+  return {
+    push(chunk: string) {
+      buffer += chunk.replace(/\r\n/g, '\n')
+      let index = buffer.indexOf('\n\n')
+      while (index !== -1) {
+        const frame = parseSseFrame(buffer.slice(0, index))
+        buffer = buffer.slice(index + 2)
+        if (frame) onEvent(frame)
+        index = buffer.indexOf('\n\n')
+      }
+    },
+  }
+}
+
+function parseSseFrame(raw: string): SseEvent | null {
+  let event = 'message'
+  const data: string[] = []
+  for (const line of raw.split('\n')) {
+    // 先頭がコロンの行はコメント。keep-aliveがこれで届く
+    if (line === '' || line.startsWith(':')) continue
+    const separator = line.indexOf(':')
+    const field = separator === -1 ? line : line.slice(0, separator)
+    let value = separator === -1 ? '' : line.slice(separator + 1)
+    if (value.startsWith(' ')) value = value.slice(1)
+    if (field === 'event') event = value
+    else if (field === 'data') data.push(value)
+  }
+  if (data.length === 0) return null
+  return { event, data: data.join('\n') }
+}
+
+export interface LogStreamOptions {
+  /** 対象のServiceContainer.id。省略時はサービスの最初のコンテナ */
+  container?: number
+  /** 接続時に受け取る直近の行数 */
+  tail?: number
+  /** 画面を離れる・停止操作をしたときに読み出しごと止めるため */
+  signal: AbortSignal
+}
+
+export interface LogStreamHandlers {
+  onLine(line: LogLine): void
+  /** サーバーが読み出しを続けられなくなったときに送ってくるerrorイベント */
+  onServerError(message: string): void
+}
+
 export interface ApiClient {
   listServices(): Promise<Service[]>
   getService(idOrName: string): Promise<ServiceDetail>
@@ -64,6 +127,8 @@ export interface ApiClient {
   getHealth(idOrName: string): Promise<HealthResponse>
   getStats(idOrName: string): Promise<StatsResponse>
   getRegistryStatus(idOrName: string): Promise<RegistryStatusResponse>
+  /** 接続が切れる(signalのabort・コンテナ消滅)まで解決しない。 */
+  streamLogs(idOrName: string, options: LogStreamOptions, handlers: LogStreamHandlers): Promise<void>
   getSettings(): Promise<Settings>
   updateSettings(settings: Settings): Promise<Settings>
   getDnsConfig(): Promise<DnsConfig>
@@ -142,6 +207,51 @@ export function createApiClient(config: ApiClientConfig): ApiClient {
     },
     async getRegistryStatus(idOrName: string) {
       return (await request<RegistryStatusResponse>(`/api/services/${idOrName}/registry`, { method: 'GET' }))!
+    },
+    async streamLogs(idOrName: string, options: LogStreamOptions, handlers: LogStreamHandlers) {
+      const params = new URLSearchParams()
+      if (options.container !== undefined) params.set('container', String(options.container))
+      if (options.tail !== undefined) params.set('tail', String(options.tail))
+      const query = params.toString()
+      const response = await fetch(`${base}/api/services/${idOrName}/logs${query ? `?${query}` : ''}`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${config.token}`,
+          Accept: 'text/event-stream',
+        },
+        signal: options.signal,
+      })
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          config.onUnauthorized?.()
+        }
+        const body = (await response.json()) as ApiErrorBody
+        throw new ApiError(response.status, body.error.code, body.error.message, body.error.fields)
+      }
+      if (!response.body) {
+        throw new Error('ログのストリームを読み出せませんでした')
+      }
+
+      const parser = createSseParser((event) => {
+        if (event.event === 'line') {
+          handlers.onLine(JSON.parse(event.data) as LogLine)
+        } else if (event.event === 'error') {
+          handlers.onServerError((JSON.parse(event.data) as { message: string }).message)
+        }
+      })
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      try {
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          parser.push(decoder.decode(value, { stream: true }))
+        }
+      } finally {
+        reader.releaseLock()
+      }
     },
     async getSettings() {
       return (await request<Settings>('/api/settings', { method: 'GET' }))!

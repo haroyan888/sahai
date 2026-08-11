@@ -185,3 +185,11 @@ export interface NotServiceInfo {
   name?: string
   ports?: NotServicePort[]
 }
+
+/** コンテナログの1行(SSEの`line`イベント)。 */
+export interface LogLine {
+  stream: 'stdout' | 'stderr'
+  /** Dockerが記録した時刻。行の先頭に付いていなければnull */
+  timestamp: string | null
+  message: string
+}

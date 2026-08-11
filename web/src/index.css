@@ -695,3 +695,40 @@ legend {
 .port-col-label {
   width: 90px;
 }
+
+/* コンテナログの表示領域。行数が多いので高さで頭打ちにし、この中だけを縦に
+   スクロールさせる。長い行は折り返す(横スクロールと縦スクロールが同時に出ると
+   目的の行を追えなくなるため) */
+.log-viewport {
+  height: 24em;
+  overflow-y: auto;
+  padding: var(--space-3);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.log-line {
+  display: flex;
+  gap: var(--space-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 標準エラーは色で区別する。ログを読む目的の大半が異常の追跡であるため */
+.log-line[data-stream='stderr'] {
+  color: var(--danger);
+}
+
+.log-line__time {
+  flex: none;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.log-line__message {
+  flex: 1;
+}

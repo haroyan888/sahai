@@ -230,6 +230,110 @@ pub async fn stats(
     Ok(Json(StatsResponse { containers }))
 }
 
+/// ログ配信の既定行数と上限。上限を設けるのは、接続直後にDockerから
+/// 大量の行を読み出してブラウザを固まらせないため。
+const DEFAULT_LOG_TAIL: u32 = 200;
+const MAX_LOG_TAIL: u32 = 5000;
+
+#[derive(serde::Deserialize)]
+pub struct LogsQuery {
+    /// 対象の`ServiceContainer.id`。省略時はサービスの最初のコンテナ
+    container: Option<i64>,
+    tail: Option<u32>,
+}
+
+#[derive(Serialize)]
+struct LogLineDto {
+    stream: &'static str,
+    timestamp: Option<String>,
+    message: String,
+}
+
+/// `GET /api/services/{id_or_name}/logs`: コンテナログをSSEで流し続ける
+/// (要件定義書9章)。サービス・コンテナの解決とtailの検証はここで済ませ、
+/// 接続を確立してからは行を流すだけにする(確立後はJSONのエラーを返せないため)。
+pub async fn logs(
+    State(state): State<AppState>,
+    Path(id_or_name): Path<String>,
+    Query(query): Query<LogsQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    use axum::response::sse::{Event, KeepAlive, Sse};
+    use futures_util::StreamExt;
+
+    let tail = query.tail.unwrap_or(DEFAULT_LOG_TAIL);
+    if tail == 0 || tail > MAX_LOG_TAIL {
+        return Err(AppError::validation_single(
+            "tail",
+            format!("1〜{MAX_LOG_TAIL}の範囲で指定してください"),
+        ));
+    }
+
+    let detail = service::load_detail(&state, &id_or_name).await?;
+    let target = match query.container {
+        Some(container_id) => detail
+            .containers
+            .iter()
+            .find(|c| c.container.id == container_id)
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "コンテナ {container_id} はサービス '{}' に属していません",
+                    detail.service.name
+                ))
+            })?,
+        None => detail.containers.first().ok_or_else(|| {
+            AppError::NotFound(format!(
+                "サービス '{}' にコンテナがありません",
+                detail.service.name
+            ))
+        })?,
+    };
+
+    let container_name = sahai_core::naming::container_docker_name(target.container.id);
+    let stream =
+        crate::docker::log_stream::stream_logs(&state.docker.docker, &container_name, tail).map(
+            |result| {
+                let event = match result {
+                    Ok(line) => Event::default().event("line").json_data(LogLineDto {
+                        stream: line.stream.as_str(),
+                        timestamp: line.timestamp,
+                        message: line.message,
+                    }),
+                    // 読み出せなくなった理由を画面に出す。コンテナが未作成・削除済みの場合が
+                    // 大半で、利用者にとっては「まだ起動していない」ことの手掛かりになる
+                    Err(e) => Event::default()
+                        .event("error")
+                        .json_data(serde_json::json!({ "message": describe_log_error(&e) })),
+                };
+                event.map_err(|e| std::io::Error::other(e.to_string()))
+            },
+        );
+
+    // Traefik経由でも切られないよう定期的にコメント行を送る。ログが何も出ない
+    // コンテナでは無通信のまま時間が過ぎるため、これが無いと接続が落ちる
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+/// ログ読み出しの失敗理由を利用者向けの文言にする。
+///
+/// コンテナが無い(404)のは異常ではなく、未起動か停止済みというだけ。しかも差配は
+/// 停止時にコンテナごと削除するため(docker::image_runtime::stop参照)、停止した
+/// サービスの過去のログは残らない。bollardの英語メッセージをそのまま出すと
+/// この事情が伝わらない。
+fn describe_log_error(error: &crate::docker::DockerError) -> String {
+    let is_not_found = matches!(
+        error,
+        crate::docker::DockerError::Bollard(bollard::errors::Error::DockerResponseServerError {
+            status_code: 404,
+            ..
+        })
+    );
+    if is_not_found {
+        "コンテナがありません(未起動、または停止済み)。停止時にコンテナごと削除するため、停止したサービスの過去のログは残りません".to_string()
+    } else {
+        error.to_string()
+    }
+}
+
 #[derive(Serialize)]
 struct RegistryStatusResponse {
     containers: Vec<ContainerRegistryDto>,

@@ -358,6 +358,41 @@ Docker操作が失敗した場合は`status: "error"`とあわせて`last_error`
 }
 ```
 
+### `GET /api/services/{id_or_name}/logs` — コンテナログの配信(SSE)
+
+要件定義書9章に対応。**このAPIだけJSONを1往復で返さず、`text/event-stream`を接続が切れるまで流し続ける。**
+
+**クエリパラメータ**
+
+| 名前 | 既定値 | 説明 |
+|---|---|---|
+| `container` | サービスの最初のコンテナ | 対象の`ServiceContainer.id` |
+| `tail` | `200` | 接続時に送る直近の行数。`1`〜`5000` |
+
+**レスポンス**: `200 OK`、`Content-Type: text/event-stream`。1行につき1イベントを送る。
+
+```
+event: line
+data: {"stream":"stdout","timestamp":"2026-08-11T07:05:25.472263Z","message":"Listening on :3000"}
+```
+
+- `stream`: `"stdout"` | `"stderr"`
+- `timestamp`: Dockerが記録した時刻。取得できない場合は`null`
+- `message`: 行の内容(末尾の改行は除去済み)
+
+読み出しが継続できなくなった場合は`error`イベントを1件送って接続を閉じる。
+
+```
+event: error
+data: {"message":"コンテナが見つかりません"}
+```
+
+**認証は他のエンドポイントと同じ`Authorization: Bearer`**。ブラウザの`EventSource`はヘッダーを付けられないため、Web UIは`fetch`のストリームを読んで自前でSSEを解釈する。トークンをクエリ文字列に置く方式は採らない(URLがアクセスログ・プロキシ・ブラウザ履歴に残るため)。
+
+**エラー**: 対象サービスが無ければ`404`、`container`が当該サービスのものでなければ`404`、`tail`が範囲外なら`400`。これらは接続を確立する前に通常のJSONエラーとして返す。
+
+**停止中のサービスに対しても接続自体は成功する**が、差配はstopでコンテナごと削除するため、直後に「コンテナがありません」の`error`イベントを返して閉じることになる(要件定義書9章)。
+
 ### 初期設定・基本設定・DNS/証明書設定・レジストリ設定
 
 `/api/services/*`とはリソースが異なるため、エンドポイント自体もパスが独立している。dns_provider/acme_emailは専用の`/api/settings/dns-provider`、registry_url/registry_username/registry_passwordは専用の`/api/settings/registry`にそれぞれ分離しているのは、保存操作の性質が全く異なるため(下記参照)。

@@ -31,8 +31,55 @@
 #
 # 本番データ(/var/sahai)を汚さないよう、DB・レジストリ等のデータは別ディレクトリ
 # (/var/sahai-dev)に分離している。
-
 services:
+  # registryのhtpasswdをdev.envの値から作る使い捨てコンテナ。本番でsetup.shが
+  # 対話で作るものに相当し、開発ではこれによりdev.envが唯一の設定元になる。
+  # 資格情報が未設定なら空のhtpasswdを置く。ファイルが存在しないとregistryが
+  # 「htpasswd is missing, provisioning with default user」でランダムな資格情報を
+  # 勝手に作ってしまい、dev.envの値と食い違うため(空ファイルなら誰も認証できないだけ)
+  registry-auth-init:
+    image: httpd:2.4-alpine
+    volumes:
+      # 本番用の registry/auth/htpasswd を上書きしないよう、dev用データと同じ
+      # /var/sahai-dev 配下に分離する
+      - ./registry/auth:/auth
+    environment:
+      - SAHAI_REGISTRY_USERNAME=${SAHAI_REGISTRY_USERNAME:-}
+      - SAHAI_REGISTRY_PASSWORD=${SAHAI_REGISTRY_PASSWORD:-}
+    # パスワードは標準入力から渡す。引数に置くとコンテナのプロセス一覧や
+    # docker inspectのCmdに平文で残る
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -e
+        if [ -z "$$SAHAI_REGISTRY_USERNAME" ] || [ -z "$$SAHAI_REGISTRY_PASSWORD" ]; then
+          : > /auth/htpasswd
+          echo "レジストリ資格情報が未設定のため、空のhtpasswdを作成しました。"
+        else
+          printf '%s' "$$SAHAI_REGISTRY_PASSWORD" \
+            | htpasswd -Bni "$$SAHAI_REGISTRY_USERNAME" > /auth/htpasswd
+          echo "htpasswdを作成しました(ユーザー名: $$SAHAI_REGISTRY_USERNAME)。"
+        fi
+    networks:
+      - sahai
+
+  registry:
+    image: registry:2
+    depends_on:
+      registry-auth-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./registry:/var/lib/registry
+      - ./registry/auth:/auth:ro
+    environment:
+      - REGISTRY_AUTH=htpasswd
+      - REGISTRY_AUTH_HTPASSWD_REALM=Registry Realm
+      - REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd
+    networks:
+      - sahai
+    # 外部公開しない。registry.sahai.<domain>経由でTraefikからのみ到達させる
+
   traefik:
     image: traefik:v3.1
     # Traefikは静的設定を単一のソースからのみ読み込み、--configFile使用時は他の
@@ -149,54 +196,6 @@ services:
     networks:
       - sahai
     # 外部公開しない。dev-routes.ymlのdev-web-uiルート経由でTraefikからのみ到達させる
-
-  # registryのhtpasswdをdev.envの値から作る使い捨てコンテナ。本番でsetup.shが
-  # 対話で作るものに相当し、開発ではこれによりdev.envが唯一の設定元になる。
-  # 資格情報が未設定なら空のhtpasswdを置く。ファイルが存在しないとregistryが
-  # 「htpasswd is missing, provisioning with default user」でランダムな資格情報を
-  # 勝手に作ってしまい、dev.envの値と食い違うため(空ファイルなら誰も認証できないだけ)
-  registry-auth-init:
-    image: httpd:2.4-alpine
-    volumes:
-      # 本番用の registry/auth/htpasswd を上書きしないよう、dev用データと同じ
-      # /var/sahai-dev 配下に分離する
-      - /var/sahai-dev/registry-auth:/auth
-    environment:
-      - SAHAI_REGISTRY_USERNAME=${SAHAI_REGISTRY_USERNAME:-}
-      - SAHAI_REGISTRY_PASSWORD=${SAHAI_REGISTRY_PASSWORD:-}
-    # パスワードは標準入力から渡す。引数に置くとコンテナのプロセス一覧や
-    # docker inspectのCmdに平文で残る
-    entrypoint:
-      - sh
-      - -c
-      - |
-        set -e
-        if [ -z "$$SAHAI_REGISTRY_USERNAME" ] || [ -z "$$SAHAI_REGISTRY_PASSWORD" ]; then
-          : > /auth/htpasswd
-          echo "レジストリ資格情報が未設定のため、空のhtpasswdを作成しました。"
-        else
-          printf '%s' "$$SAHAI_REGISTRY_PASSWORD" \
-            | htpasswd -Bni "$$SAHAI_REGISTRY_USERNAME" > /auth/htpasswd
-          echo "htpasswdを作成しました(ユーザー名: $$SAHAI_REGISTRY_USERNAME)。"
-        fi
-    networks:
-      - sahai
-
-  registry:
-    image: registry:2
-    depends_on:
-      registry-auth-init:
-        condition: service_completed_successfully
-    volumes:
-      - /var/sahai-dev/registry:/var/lib/registry
-      - /var/sahai-dev/registry-auth:/auth:ro
-    environment:
-      - REGISTRY_AUTH=htpasswd
-      - REGISTRY_AUTH_HTPASSWD_REALM=Registry Realm
-      - REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd
-    networks:
-      - sahai
-    # 外部公開しない。registry.sahai.<domain>経由でTraefikからのみ到達させる
 
 networks:
   sahai:

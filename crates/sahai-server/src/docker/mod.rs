@@ -6,6 +6,7 @@ pub mod build_runtime;
 pub mod compose_runtime;
 pub mod image_runtime;
 pub mod inspector;
+pub mod log_stream;
 pub mod override_gen;
 pub mod registry_login;
 
