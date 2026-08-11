@@ -146,6 +146,22 @@ cp dev.env.example dev.env   # 初回のみ。ポート等をデフォルトか�
 docker compose -f dev.compose.yaml --env-file dev.env up -d --build
 ```
 
+**開発では`setup.sh`を使わず、[dev.env](../dev.env.example)を唯一の設定元にする**。本番で`setup.sh`が対話で聞く項目は、以下のとおりdev.envから渡せる。
+
+| `setup.sh`の設定項目 | dev.envのキー | 経路 |
+| --- | --- | --- |
+| APIトークン・ドメイン・httpsリダイレクト | `SAHAI_API_TOKEN`・`SAHAI_DOMAIN`・`SAHAI_HTTPS_REDIRECT` | sahai-serverの環境変数 → `Settings::seed_from_env` |
+| レジストリURL・資格情報(DB側) | `SAHAI_REGISTRY_URL`・`SAHAI_REGISTRY_USERNAME`・`SAHAI_REGISTRY_PASSWORD` | 同上 |
+| レジストリのhtpasswd | `SAHAI_REGISTRY_USERNAME`・`SAHAI_REGISTRY_PASSWORD` | `registry-auth-init`サービス(後述) |
+| DNSプロバイダ・ACMEメール | `SAHAI_DNS_PROVIDER`・`SAHAI_ACME_EMAIL` | sahai-serverの環境変数 → 同上。Traefikの`command`引数へも同じ値が渡る |
+| DNSプロバイダ固有の認証情報(`CF_DNS_API_TOKEN`等) | — | **渡せない**。Web UIの「DNS/証明書設定」から入力する |
+
+環境変数からのシードは[main.rs](../crates/sahai-server/src/main.rs)の起動処理で、**DBに設定行が無く、かつ`api_token`と`domain`の両方が非空のときだけ**行われる。`SAHAI_API_TOKEN`を空のままにすれば従来どおり初期設定画面から設定できる。一度DBができたあとはDBの値が正で、dev.envの変更は反映されない(読み直させるには`/var/sahai-dev`を消す)。
+
+DNSプロバイダ固有の認証情報だけが渡せないのは、保存先の`.sahai.env`が`PUT /api/settings/dns-provider`の処理中にsahai-server自身が書くファイルで(後述)、環境変数から取り込む経路を持たないため。`SAHAI_DOMAIN=localhost`の通常の開発では証明書を取得できず、この設定自体が不要になる。
+
+**registryのhtpasswd**は`registry-auth-init`という使い捨てサービスがdev.envの資格情報から生成し、`registry`は`service_completed_successfully`で待ち合わせる。資格情報が空なら空のhtpasswdを置く。ファイル自体が存在しないと`registry:2`は起動には成功するものの`htpasswd is missing, provisioning with default user`としてランダムな資格情報を自前で用意してしまい、dev.envの値と食い違うため(空ファイルなら誰も認証できないだけで済む)。本番用の`registry/auth/htpasswd`を上書きしないよう、dev側の出力先は`/var/sahai-dev/registry-auth`に分離している。
+
 **公開ポートを持つのはtraefikのみ**(既定80。開発機で80番が別プロセスと衝突する場合は[dev.env.example](../dev.env.example)の`SAHAI_TRAEFIK_HTTP_PORT`で変更する)。sahai-server・web・registryはdockerネットワーク内部のみで完結し、すべてTraefik経由でアクセスする、本番と同じ「Traefikだけが外向きに出る」トポロジーを開発時も維持している。
 
 - **sahai-server**: リポジトリ全体を`/app`へbindマウントし、リリースビルド済みバイナリではなく`cargo run -p sahai-server`で起動する(`Dockerfile`の`dev`ステージ、Rustツールチェーンのみでソースは含まない)。ソースを編集したら`docker compose ... restart sahai-server`で再起動すれば、cargoの増分コンパイル(実測5〜7秒程度)で変更が反映される

@@ -6,6 +6,11 @@
 #   cp dev.env.example dev.env   # 初回のみ。ポート等をデフォルトから変えたい場合に編集
 #   docker compose -f dev.compose.yaml --env-file dev.env up -d --build
 #
+# 開発ではsetup.shを使わない。setup.shが対話で聞く項目はすべてdev.envから渡し、
+# sahai-serverがDBの空な初回起動時にシードする(settings.rs::seed_from_envと
+# main.rsのシード条件を参照)。そのため初期設定画面を通らずに起動できる。
+# ただしシードされるのは初回だけで、以後はDBの値が正になる(dev.env.example参照)。
+#
 # 公開ポートを持つのはtraefikのみ(既定80。dev.envのSAHAI_TRAEFIK_HTTP_PORTで変更可)。
 # sahai-server・web・registryはdockerネットワーク内部のみで完結し、すべて
 # Traefik経由でアクセスする(本番と同じ「Traefikだけが外向きに出る」トポロジー)。
@@ -20,9 +25,9 @@
 # 開発時はweb/sahai-serverを別コンテナのまま起動するため、
 # sahai-server自身が書き出すルート(常に自分自身への単一マージルート)の代わりに
 # traefik/dev-dynamic/dev-routes.yml という開発専用の静的ルートでパス分割している
-# (/api/* → sahai-server、それ以外 → web)。**このためdev環境ではドメインを
-# localhostに固定する前提**(初期設定画面でdomain=localhostと入力すること。
-# 詳細はdev-routes.yml参照)。
+# (/api/* → sahai-server、それ以外 → web)。このルートはTraefik自身の環境変数
+# SAHAI_DOMAINを参照するため、**dev.envのSAHAI_DOMAINとDBのドメインは常に
+# 一致させること**(詳細はdev-routes.yml参照)。
 #
 # 本番データ(/var/sahai)を汚さないよう、DB・レジストリ等のデータは別ディレクトリ
 # (/var/sahai-dev)に分離している。
@@ -97,17 +102,27 @@ services:
     environment:
       - SAHAI_BIND_ADDR=0.0.0.0:8080
       - SAHAI_DATA_ROOT=/var/sahai
+      # 以下はDBが空の初回起動時にだけ読まれるシード用。設定してあれば初期設定画面を
+      # 通らずにconfigured状態で起動する(SAHAI_API_TOKENとSAHAI_DOMAINの両方が
+      # 非空であることがシードの条件)。以降はDBの値が正で、これらは無視される
       - SAHAI_API_TOKEN=${SAHAI_API_TOKEN:-}
       - SAHAI_DOMAIN=${SAHAI_DOMAIN:-localhost}
-      - SAHAI_REGISTRY_URL=${SAHAI_REGISTRY_URL:-registry.${SAHAI_DOMAIN:-localhost}}
+      # Traefikのregistryルートは常にregistry.sahai.<domain>を待ち受けるため
+      # (route_writer.rs)、既定値もそれに揃える
+      - SAHAI_REGISTRY_URL=${SAHAI_REGISTRY_URL:-registry.sahai.${SAHAI_DOMAIN:-localhost}}
       - SAHAI_HTTPS_REDIRECT=${SAHAI_HTTPS_REDIRECT:-false}
       - SAHAI_DOCKER_HOST_ADDRESS=host.docker.internal
       - SAHAI_REGISTRY_INTERNAL_URL=${SAHAI_REGISTRY_INTERNAL_URL:-http://registry:5000}
       # `sahai service create`(サーバー側build+push)を検証する場合のみ設定する。
-      # DBが空の初回起動時にのみ読まれる後方互換のシード用で、
-      # 以降はWeb UIの「レジストリ設定」カードから変更できる
+      # 同じ値からregistry-auth-initがhtpasswdを作るため、両者は常に一致する
       - SAHAI_REGISTRY_USERNAME=${SAHAI_REGISTRY_USERNAME:-}
       - SAHAI_REGISTRY_PASSWORD=${SAHAI_REGISTRY_PASSWORD:-}
+      # 実ドメインで証明書取得まで確認する場合のみ設定する。プロバイダ固有の認証情報
+      # (CF_DNS_API_TOKEN等)はここからは渡せず、Web UIの「DNS/証明書設定」から
+      # 入力する必要がある(保存先の.sahai.envはsahai-server自身が書くファイルで、
+      # 環境変数から取り込む経路が無いため)
+      - SAHAI_DNS_PROVIDER=${SAHAI_DNS_PROVIDER:-}
+      - SAHAI_ACME_EMAIL=${SAHAI_ACME_EMAIL:-}
     networks:
       - sahai
     # 外部公開しない。dev-routes.ymlのdev-apiルート(sahai.localhost/api/*)経由で
@@ -135,18 +150,53 @@ services:
       - sahai
     # 外部公開しない。dev-routes.ymlのdev-web-uiルート経由でTraefikからのみ到達させる
 
+  # registryのhtpasswdをdev.envの値から作る使い捨てコンテナ。本番でsetup.shが
+  # 対話で作るものに相当し、開発ではこれによりdev.envが唯一の設定元になる。
+  # 資格情報が未設定なら空のhtpasswdを置く。ファイルが存在しないとregistryが
+  # 「htpasswd is missing, provisioning with default user」でランダムな資格情報を
+  # 勝手に作ってしまい、dev.envの値と食い違うため(空ファイルなら誰も認証できないだけ)
+  registry-auth-init:
+    image: httpd:2.4-alpine
+    volumes:
+      # 本番用の registry/auth/htpasswd を上書きしないよう、dev用データと同じ
+      # /var/sahai-dev 配下に分離する
+      - /var/sahai-dev/registry-auth:/auth
+    environment:
+      - SAHAI_REGISTRY_USERNAME=${SAHAI_REGISTRY_USERNAME:-}
+      - SAHAI_REGISTRY_PASSWORD=${SAHAI_REGISTRY_PASSWORD:-}
+    # パスワードは標準入力から渡す。引数に置くとコンテナのプロセス一覧や
+    # docker inspectのCmdに平文で残る
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -e
+        if [ -z "$$SAHAI_REGISTRY_USERNAME" ] || [ -z "$$SAHAI_REGISTRY_PASSWORD" ]; then
+          : > /auth/htpasswd
+          echo "レジストリ資格情報が未設定のため、空のhtpasswdを作成しました。"
+        else
+          printf '%s' "$$SAHAI_REGISTRY_PASSWORD" \
+            | htpasswd -Bni "$$SAHAI_REGISTRY_USERNAME" > /auth/htpasswd
+          echo "htpasswdを作成しました(ユーザー名: $$SAHAI_REGISTRY_USERNAME)。"
+        fi
+    networks:
+      - sahai
+
   registry:
     image: registry:2
+    depends_on:
+      registry-auth-init:
+        condition: service_completed_successfully
     volumes:
       - /var/sahai-dev/registry:/var/lib/registry
-      - ./registry/auth:/auth:ro
+      - /var/sahai-dev/registry-auth:/auth:ro
     environment:
       - REGISTRY_AUTH=htpasswd
       - REGISTRY_AUTH_HTPASSWD_REALM=Registry Realm
       - REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd
     networks:
       - sahai
-    # 外部公開しない。registry.localhost経由でTraefikからのみ到達させる
+    # 外部公開しない。registry.sahai.<domain>経由でTraefikからのみ到達させる
 
 networks:
   sahai:
