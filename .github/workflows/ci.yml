@@ -75,8 +75,10 @@ jobs:
           }
           if ($failed) { exit 1 }
 
-      - name: Compose file is valid
-        run: docker compose -f compose.yaml config --quiet
+      - name: Compose files are valid
+        run: |
+          docker compose -f compose.yaml config --quiet
+          docker compose -f dev.compose.yaml config --quiet
 
   web:
     runs-on: ubuntu-latest
