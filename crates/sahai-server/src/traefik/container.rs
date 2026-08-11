@@ -8,10 +8,10 @@
 //! (compose.yamlへのホスト同一パスマウントが必要)は使えない。既存のTraefikコンテナ
 //! (ラベル`com.docker.compose.service=traefik`で検索)をinspectし、その設定
 //! (イメージ・起動コマンド・マウント・ポート・ネットワーク等)を複製して作り直す。
-//! Envだけは、イメージのデフォルトEnv + `.sahai.env`ファイルの最新内容で組み立て直す
-//! (`env_file:`ディレクティブの実行時展開に相当する)。
+//! Envだけは、現在のコンテナのEnvに`.sahai.env`ファイルの最新内容を重ねて
+//! 組み立て直す(`env_file:`ディレクティブの実行時展開に相当する)。
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::time::Duration;
 
@@ -72,7 +72,7 @@ pub async fn recreate_traefik(
         .trim_start_matches('/')
         .to_string();
 
-    let config = build_config(docker, &inspect, env_file, dns_provider, acme_email).await?;
+    let config = build_config(&inspect, env_file, dns_provider, acme_email).await?;
 
     // 既に停止している場合はエラーになるが、削除できれば十分なので無視する
     let _ = docker
@@ -124,7 +124,7 @@ pub async fn reconcile_traefik(
     let inspect = docker
         .inspect_container(&container_id, None::<InspectContainerOptions>)
         .await?;
-    let desired = build_config(docker, &inspect, env_file, dns_provider, acme_email).await?;
+    let desired = build_config(&inspect, env_file, dns_provider, acme_email).await?;
 
     let current = inspect.config.clone().unwrap_or_default();
     if env_matches(current.env.as_deref(), desired.env.as_deref())
@@ -137,8 +137,7 @@ pub async fn reconcile_traefik(
     Ok(true)
 }
 
-/// Envは順序が保証されない(build_configがHashMapから組み立てるため)ので、
-/// 集合として比較する。
+/// Envは順序が保証されない(Docker側が返す順序に依存する)ので、集合として比較する。
 fn env_matches(current: Option<&[String]>, desired: Option<&[String]>) -> bool {
     let to_set = |v: Option<&[String]>| -> std::collections::BTreeSet<String> {
         v.unwrap_or_default().iter().cloned().collect()
@@ -166,11 +165,10 @@ async fn find_traefik_container(docker: &Docker) -> Result<String, ContainerErro
 
 /// inspect結果(既存コンテナ)から、再作成用のConfigを組み立てる。イメージ・
 /// ポート・ラベル・HostConfig(マウント・ネットワーク・再起動ポリシー等)はそのまま複製し、
-/// Envだけはイメージのデフォルト値+`.sahai.env`の最新内容で組み立て直す
-/// (`env_file:`ディレクティブの実行時展開に相当)。起動コマンドも基本は複製だが、
-/// ACME関連の2フラグだけは`override_acme_cmd_flags`でDBの現在値に差し替える。
+/// Envだけは`.sahai.env`の最新内容を重ねて組み立て直す(`env_file:`ディレクティブの
+/// 実行時展開に相当)。起動コマンドも基本は複製だが、ACME関連の2フラグだけは
+/// `override_acme_cmd_flags`でDBの現在値に差し替える。
 async fn build_config(
-    docker: &Docker,
     inspect: &ContainerInspectResponse,
     env_file: &Path,
     dns_provider: &str,
@@ -179,30 +177,10 @@ async fn build_config(
     let container_config = inspect.config.clone().unwrap_or_default();
     let image = container_config.image.clone();
 
-    let default_env = match &image {
-        Some(image_name) => docker
-            .inspect_image(image_name)
-            .await
-            .ok()
-            .and_then(|i| i.config)
-            .and_then(|c| c.env)
-            .unwrap_or_default(),
-        None => Vec::new(),
-    };
-
-    let mut env_map: HashMap<String, String> = HashMap::new();
-    for entry in &default_env {
-        if let Some((k, v)) = entry.split_once('=') {
-            env_map.insert(k.to_string(), v.to_string());
-        }
-    }
-    for (k, v) in crate::env_file::load(env_file).await? {
-        env_map.insert(k, v);
-    }
-    let env: Vec<String> = env_map
-        .into_iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect();
+    let env = merge_env(
+        container_config.env.as_deref().unwrap_or_default(),
+        &crate::env_file::load(env_file).await?,
+    );
 
     let cmd = container_config
         .cmd
@@ -219,6 +197,32 @@ async fn build_config(
         host_config: inspect.host_config.clone(),
         ..Default::default()
     })
+}
+
+/// 現在のコンテナのEnvを土台に、`.sahai.env`の内容を上書きして組み立て直す
+/// (純粋関数。Docker無しでテストできるよう分離している)。
+///
+/// 土台をイメージの既定Envにはしない。compose.yamlの`environment:`で渡された値まで
+/// 落ちてしまい、再作成のたびにコンテナの設定が変わってしまうため(開発用composeの
+/// `SAHAI_DOMAIN`がこれで消え、Traefikの開発用ルートが全て404になる問題を踏んだ)。
+/// 現在のコンテナのEnvにはイメージの既定値も既に含まれている。
+///
+/// 代償として、`.sahai.env`から手で消したキーは再作成しても消えない
+/// (`env_file::upsert`はキーを削除しないため、通常の設定変更では起きない)。
+fn merge_env(current: &[String], overrides: &[(String, String)]) -> Vec<String> {
+    let mut env_map: BTreeMap<&str, &str> = BTreeMap::new();
+    for entry in current {
+        if let Some((k, v)) = entry.split_once('=') {
+            env_map.insert(k, v);
+        }
+    }
+    for (k, v) in overrides {
+        env_map.insert(k, v);
+    }
+    env_map
+        .into_iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect()
 }
 
 /// 複製した起動コマンドのうち、ACMEのメールアドレスとDNSチャレンジのプロバイダ名だけを
@@ -268,7 +272,48 @@ mod tests {
         entries.iter().map(|s| s.to_string()).collect()
     }
 
-    /// Envはbuild_configがHashMapから組み立てるため順序が保証されない。
+    fn overrides(entries: &[(&str, &str)]) -> Vec<(String, String)> {
+        entries
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    /// composeの`environment:`で渡された値を土台に残す。イメージの既定Envを土台に
+    /// すると、開発用composeのSAHAI_DOMAINのような値が再作成のたびに消える。
+    #[test]
+    fn merge_env_keeps_entries_not_in_env_file() {
+        let current = env(&["PATH=/usr/bin", "SAHAI_DOMAIN=localhost"]);
+        let merged = merge_env(&current, &overrides(&[("CF_DNS_API_TOKEN", "secret")]));
+        assert_eq!(
+            merged,
+            env(&[
+                "CF_DNS_API_TOKEN=secret",
+                "PATH=/usr/bin",
+                "SAHAI_DOMAIN=localhost"
+            ])
+        );
+    }
+
+    #[test]
+    fn merge_env_overwrites_existing_keys() {
+        let current = env(&["SAHAI_DNS_PROVIDER=route53"]);
+        let merged = merge_env(
+            &current,
+            &overrides(&[("SAHAI_DNS_PROVIDER", "cloudflare")]),
+        );
+        assert_eq!(merged, env(&["SAHAI_DNS_PROVIDER=cloudflare"]));
+    }
+
+    /// 値に`=`を含む認証情報(base64等)を分断しない。
+    #[test]
+    fn merge_env_keeps_equals_sign_in_value() {
+        let current = env(&["TOKEN=a=b=c"]);
+        let merged = merge_env(&current, &[]);
+        assert_eq!(merged, env(&["TOKEN=a=b=c"]));
+    }
+
+    /// Envはbuild_configが連想配列から組み立てるため、Docker側が返す順序とは限らない。
     /// 順序で比較すると、内容が同じでも毎回再作成が走りTraefikが瞬断する。
     #[test]
     fn env_matches_ignores_order() {

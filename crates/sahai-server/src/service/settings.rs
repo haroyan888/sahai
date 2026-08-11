@@ -73,14 +73,27 @@ pub async fn update_dns_config(
     // dns_provider/acme_emailはTraefikの静的設定(CLI引数)としてしか渡せないため、
     // 再作成時にコンテナの起動コマンドへ反映させる必要がある(container.rsの
     // override_acme_cmd_flags参照)。ここまでのバリデーションでdns_providerは
-    // 非空であることが保証されている
-    crate::traefik::recreate_traefik(
-        &state.docker.docker,
-        &state.config.env_file_path,
-        &new_config.dns_provider,
-        &new_config.acme_email,
-    )
+    // 非空であることが保証されている。
+    //
+    // 再作成は必ず別タスクで走らせる。Web UIからの保存リクエストはTraefik自身を
+    // 経由して届くため、再作成の最初の停止で自分の接続が切れる。この関数を
+    // ハンドラのタスクのまま実行すると、そこでfutureが破棄されて停止だけが済み、
+    // 削除・再作成が実行されないままTraefikが落ちたきりになる。
+    // spawnした先はクライアントの切断では中断されないため最後まで完遂する
+    // (JoinHandleのawaitが中断されても同じ)。
+    let docker = state.docker.docker.clone();
+    let env_file_path = state.config.env_file_path.clone();
+    let dns_provider = new_config.dns_provider.clone();
+    let acme_email = new_config.acme_email.clone();
+    tokio::spawn(async move {
+        crate::traefik::recreate_traefik(&docker, &env_file_path, &dns_provider, &acme_email).await
+    })
     .await
+    .map_err(|e| {
+        AppError::Internal(format!(
+            "Traefikコンテナの再作成を実行できませんでした: {e}"
+        ))
+    })?
     .map_err(|e| AppError::Internal(format!("Traefikコンテナの再作成に失敗しました: {e}")))?;
 
     Ok(new_config)
