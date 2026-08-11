@@ -55,6 +55,7 @@ function mockClient(overrides: Partial<ApiClient> = {}): ApiClient {
     getHealth: vi.fn().mockResolvedValue({ health_status: 'unknown', last_health_check_at: null, containers: [] }),
     getStats: vi.fn().mockResolvedValue({ containers: [] }),
     getRegistryStatus: vi.fn().mockResolvedValue({ containers: [] }),
+    streamLogs: vi.fn().mockResolvedValue(undefined),
     getSettings: vi.fn(),
     updateSettings: vi.fn(),
     getDnsConfig: vi.fn(),
@@ -359,6 +360,7 @@ describe('ServiceDetailPage', () => {
     it('コンテナごとにレジストリへの登録有無(getRegistryStatusの結果)をイメージタグ付きで表示する', async () => {
       const client = mockClient({
         getRegistryStatus: vi.fn().mockResolvedValue({
+        streamLogs: vi.fn().mockResolvedValue(undefined),
           containers: [
             { id: 10, name: 'myapp', image_tag: 'registry.sahai.example.com/myapp:latest', image_present: false },
           ],

@@ -21,6 +21,7 @@ import { HealthBadge } from '../components/HealthBadge'
 import { PortsEditModal } from '../components/PortsEditModal'
 import { EditServiceModal } from '../components/EditServiceModal'
 import { DeleteConfirmModal } from '../components/DeleteConfirmModal'
+import { ContainerLogsPanel } from '../components/ContainerLogsPanel'
 import { formatBytes } from '../utils/formatBytes'
 import { usePolling } from '../hooks/usePolling'
 
@@ -363,6 +364,10 @@ export function ServiceDetailPage({ client, idOrName, onDeleted }: ServiceDetail
           })}
         </div>
       </section>
+
+      {detail.containers.length > 0 && (
+        <ContainerLogsPanel client={client} idOrName={idOrName} containers={detail.containers} />
+      )}
 
       {portsModalOpen && (
         <PortsEditModal

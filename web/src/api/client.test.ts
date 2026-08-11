@@ -3,7 +3,8 @@
 // このファイルのテストはすべて失敗する想定(GREENフェーズで実装する)。
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, createApiClient, parseApiError } from './client'
+import { ApiError, createApiClient, createSseParser, parseApiError } from './client'
+import type { SseEvent } from './client'
 import type { ServiceDetail } from './types'
 
 const BASE_URL = 'https://admin.example.com'
@@ -434,5 +435,65 @@ describe('401時の扱い', () => {
     const client = createApiClient({ baseUrl: BASE_URL, token: TOKEN })
 
     await expect(client.listServices()).rejects.toBeInstanceOf(ApiError)
+  })
+})
+
+describe('createSseParser', () => {
+  function collect() {
+    const events: SseEvent[] = []
+    return { events, parser: createSseParser((e) => events.push(e)) }
+  }
+
+  it('空行で区切られたイベントを取り出す', () => {
+    const { events, parser } = collect()
+    parser.push('event: line\ndata: {"message":"hello"}\n\n')
+
+    expect(events).toEqual([{ event: 'line', data: '{"message":"hello"}' }])
+  })
+
+  /** チャンクの境界はイベントの境界と一致しない。途中で切れた分は次と繋ぐ */
+  it('イベントの途中で切れたチャンクを繋ぐ', () => {
+    const { events, parser } = collect()
+    parser.push('event: line\nda')
+    expect(events).toHaveLength(0)
+
+    parser.push('ta: {"message":"hello"}\n\n')
+    expect(events).toEqual([{ event: 'line', data: '{"message":"hello"}' }])
+  })
+
+  it('1チャンクに複数イベントが入っていても分割する', () => {
+    const { events, parser } = collect()
+    parser.push('event: line\ndata: a\n\nevent: line\ndata: b\n\n')
+
+    expect(events.map((e) => e.data)).toEqual(['a', 'b'])
+  })
+
+  /** keep-aliveはコロン始まりのコメント行として届く。イベントとして流すと画面が壊れる */
+  it('コメント行だけのフレームはイベントにしない', () => {
+    const { events, parser } = collect()
+    parser.push(': keep-alive\n\n')
+
+    expect(events).toHaveLength(0)
+  })
+
+  it('eventフィールドが無ければmessageとして扱う', () => {
+    const { events, parser } = collect()
+    parser.push('data: plain\n\n')
+
+    expect(events).toEqual([{ event: 'message', data: 'plain' }])
+  })
+
+  it('複数のdata行を改行で連結する', () => {
+    const { events, parser } = collect()
+    parser.push('event: line\ndata: first\ndata: second\n\n')
+
+    expect(events[0].data).toBe('first\nsecond')
+  })
+
+  it('CRLFで区切られていても解釈する', () => {
+    const { events, parser } = collect()
+    parser.push('event: line\r\ndata: hello\r\n\r\n')
+
+    expect(events).toEqual([{ event: 'line', data: 'hello' }])
   })
 })
