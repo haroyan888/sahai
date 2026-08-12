@@ -113,6 +113,7 @@ sahai container push myapp --deploy  # ローカルでビルドしてpush、再�
 
 | ファイル | 内容 |
 |---|---|
+| [development.md](docs/development.md) | 開発環境の起動と注意点 |
 | [requirements.md](docs/requirements.md) | 要件定義 |
 | [api-design.md](docs/api-design.md) | API設計 |
 | [backend-architecture.md](docs/backend-architecture.md) | バックエンド構成 |
@@ -127,6 +128,8 @@ sahai container push myapp --deploy  # ローカルでビルドしてpush、再�
 cargo test --workspace
 cd web && npm test
 ```
+
+ソースを編集しながら動かす場合の手順は[development.md](docs/development.md)を参照。
 
 ## ライセンス
 
