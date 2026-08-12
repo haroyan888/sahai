@@ -47,17 +47,21 @@ pub fn normalize_container_path(container_path: &str) -> String {
 }
 
 /// 永続化ボリュームのホスト側パスを生成する。
-/// `<sahai_data_root>/services/<service_id>/<正規化パス>/`。
+/// `<host_data_root>/services/<service_id>/<正規化パス>/`。
 /// `container_id`には依存しない。
 ///
-/// 戻り値は`String`であり、常に`/`区切り。呼び出し元はDockerのbind-mount文字列
-/// (`docker run -v`やcompose overrideの`volumes:`)に直接埋め込むだけであり、
-/// sahai-server自身のローカルファイルI/Oには使わない。差配のDockerホストは
+/// 第1引数は**dockerdから見たデータルート**(`Config::host_data_root`)であり、
+/// sahai-serverコンテナ内から見えるパス(`Config::sahai_data_root`)ではない。
+/// 戻り値はDockerのbind-mount文字列(`docker run -v`やcompose overrideの
+/// `volumes:`)に直接埋め込まれ、**dockerdがホスト側のパスとして解決する**ため。
+/// sahai-server自身のローカルファイルI/Oにはこの関数を使わない。
+///
+/// 戻り値は`String`であり、常に`/`区切り。差配のDockerホストは
 /// 常にLinuxのため、`PathBuf::join`/`Path::display`のような
 /// 実行環境依存のパス区切り文字に頼らず、ここで明示的に`/`を使う
 /// (Windows上での`cargo test`実行時に`\`が混入するのを防ぐ。実際に発生した不具合)。
-pub fn volume_host_path(sahai_data_root: &Path, service_id: i64, container_path: &str) -> String {
-    let root = sahai_data_root.display().to_string();
+pub fn volume_host_path(host_data_root: &Path, service_id: i64, container_path: &str) -> String {
+    let root = host_data_root.display().to_string();
     let root = root.trim_end_matches('/');
     format!(
         "{root}/services/{service_id}/{}",

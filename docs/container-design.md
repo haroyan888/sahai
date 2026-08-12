@@ -89,6 +89,25 @@ GitHub Actionsがamd64/arm64のイメージをビルドし、Docker Hub(`haroyan
 
 [compose.yaml](../compose.yaml) では `sahai-server` サービスに `- /var/sahai:/var/sahai` を指定してこれを担保している。Traefikコンテナも同様に `/var/sahai/traefik/dynamic` をホストと同一パスでマウントする。
 
+**生成されるデータはすべてこのデータルート配下に置く**。リポジトリのディレクトリには置かない(レジストリのhtpasswdだけは以前`registry/auth/`に置いていたが、`<データルート>/registry-auth/`へ移した)。sahai-server自身が書くもの(DB・uploads・compose-projects・`.sahai.env`・setupトークン)も、他コンテナがbindマウントで書くもの(レジストリのblob・htpasswd・Traefikの動的ルート・ACME証明書)も区別しない。置き場所が2箇所に割れていると、バックアップ・[clean.sh](../clean.sh)での削除・パーミッションの扱いがそれぞれ別扱いになるため。
+
+データルート配下は root 所有になる(存在しないbindマウント元をdockerdが作るため)。setupスクリプトはsudoを要求しない方針なので、ここへ書き込む処理は**コンテナ経由で行う**(`docker run --rm -v /var/sahai/registry-auth:/auth ...`)。[clean.sh](../clean.sh)の削除処理が同じ手を使っているのと同じ理由。
+
+### データルートは2つの表現を持つ
+
+上記の同一パスマウントが成立しない環境があるため、`Config`はデータルートを2つ持つ。
+
+| フィールド | 環境変数 | 何のためのパスか |
+|---|---|---|
+| `sahai_data_root` | `SAHAI_DATA_ROOT` | **sahai-server自身のファイルI/O**。DB・uploads・compose-projects・Traefik動的設定の読み書き、`purge_volumes`でのボリュームディレクトリ削除 |
+| `host_data_root` | `SAHAI_HOST_DATA_ROOT`(未設定なら上と同値) | **dockerdへ渡すbindマウント元**。`naming::volume_host_path`が組み立てるサービスの永続ボリュームのパスだけがこちらを使う |
+
+**本番では両者は同じ`/var/sahai`**で、`SAHAI_HOST_DATA_ROOT`は設定しない。分ける必要が出るのは、Windows開発機のようにコンテナ側マウント先へホストのパス(`E:\repos\sahai\data`)をそのまま指定できず、同一パスマウントが**原理的に成立しない**場合だけ。
+
+「同じ場所を指すのにホスト側とコンテナ側で別の文字列が必要」という問題は、VS Code Dev Containersが`${localWorkspaceFolder}`と`${containerWorkspaceFolder}`を別々に公開しているのと同じ構図で、両方を別の設定として持つのがこの領域の定石になっている。
+
+2つが**同じ物理的な場所を指していること**が前提であり、それが崩れると壊れる。例えば`purge_volumes`はdockerdが作ったディレクトリを`sahai_data_root`側から辿って消すため、片方だけ別の場所を指していると「削除したのに残る」ことになる。
+
 ## 4. Traefikの静的設定
 
 Traefikコンテナの`command`引数(`compose.yaml`/`dev.compose.yaml`のtraefikサービス参照)のポイント(要件定義書4章):
@@ -166,17 +185,34 @@ docker compose -f dev.compose.yaml --env-file dev.env up -d --build
 | DNSプロバイダ・ACMEメール | `SAHAI_DNS_PROVIDER`・`SAHAI_ACME_EMAIL` | sahai-serverの環境変数 → 同上。Traefikの`command`引数へも同じ値が渡る |
 | DNSプロバイダ固有の認証情報(`CF_DNS_API_TOKEN`等) | — | **渡せない**。Web UIの「DNS/証明書設定」から入力する |
 
-環境変数からのシードは[main.rs](../crates/sahai-server/src/main.rs)の起動処理で、**DBに設定行が無く、かつ`api_token`と`domain`の両方が非空のときだけ**行われる。`SAHAI_API_TOKEN`を空のままにすれば従来どおり初期設定画面から設定できる。一度DBができたあとはDBの値が正で、dev.envの変更は反映されない(読み直させるには`/var/sahai-dev`を消す)。
+環境変数からのシードは[main.rs](../crates/sahai-server/src/main.rs)の起動処理で、**DBに設定行が無く、かつ`api_token`と`domain`の両方が非空のときだけ**行われる。`SAHAI_API_TOKEN`を空のままにすれば従来どおり初期設定画面から設定できる。一度DBができたあとはDBの値が正で、dev.envの変更は反映されない(読み直させるには`./data`を消す)。
 
 DNSプロバイダ固有の認証情報だけが渡せないのは、保存先の`.sahai.env`が`PUT /api/settings/dns-provider`の処理中にsahai-server自身が書くファイルで(後述)、環境変数から取り込む経路を持たないため。`SAHAI_DOMAIN=localhost`の通常の開発では証明書を取得できず、この設定自体が不要になる。
 
-**registryのhtpasswd**は`registry-auth-init`という使い捨てサービスがdev.envの資格情報から生成し、`registry`は`service_completed_successfully`で待ち合わせる。資格情報が空なら空のhtpasswdを置く。ファイル自体が存在しないと`registry:2`は起動には成功するものの`htpasswd is missing, provisioning with default user`としてランダムな資格情報を自前で用意してしまい、dev.envの値と食い違うため(空ファイルなら誰も認証できないだけで済む)。本番用の`registry/auth/htpasswd`を上書きしないよう、dev側の出力先は`/var/sahai-dev/registry-auth`に分離している。
+**registryのhtpasswd**は`registry-auth-init`という使い捨てサービスがdev.envの資格情報から生成し、`registry`は`service_completed_successfully`で待ち合わせる。資格情報が空なら空のhtpasswdを置く。ファイル自体が存在しないと`registry:2`は起動には成功するものの`htpasswd is missing, provisioning with default user`としてランダムな資格情報を自前で用意してしまい、dev.envの値と食い違うため(空ファイルなら誰も認証できないだけで済む)。出力先は`./data/registry-auth`で、本番の`/var/sahai/registry-auth`と同じ位置づけになる。
 
 **公開ポートを持つのはtraefikのみ**(既定80。開発機で80番が別プロセスと衝突する場合は[dev.env.example](../dev.env.example)の`SAHAI_TRAEFIK_HTTP_PORT`で変更する)。sahai-server・web・registryはdockerネットワーク内部のみで完結し、すべてTraefik経由でアクセスする、本番と同じ「Traefikだけが外向きに出る」トポロジーを開発時も維持している。
 
 - **sahai-server**: リポジトリ全体を`/app`へbindマウントし、リリースビルド済みバイナリではなく`cargo run -p sahai-server`で起動する(`Dockerfile`の`dev`ステージ、Rustツールチェーンのみでソースは含まない)。ソースを編集したら`docker compose ... restart sahai-server`で再起動すれば、cargoの増分コンパイル(実測5〜7秒程度)で変更が反映される
 - **web**: `./web`を`/app/web`へbindマウントし、`npm run dev -- --host 0.0.0.0`(Viteの開発サーバー)で起動する(`Dockerfile`の`web-dev`ステージ)。ホスト側のファイル編集がそのままホットリロードされる
-- **traefik・registry**: `compose.yaml`とほぼ同じ定義をこのファイル内に複製している(依存を断ち切るためのトレードオフとして許容した)。本番データ(`/var/sahai`)を汚さないよう、DB・レジストリ等のデータは別ディレクトリ(`/var/sahai-dev`)に分離している
+- **traefik・registry**: `compose.yaml`とほぼ同じ定義をこのファイル内に複製している(依存を断ち切るためのトレードオフとして許容した)
+
+### 開発時のデータルートは`./data`(プロジェクトディレクトリ配下)
+
+本番のデータルートは`/var/sahai`だが、**開発時はリポジトリ直下の`./data`をデータルートにする**。理由は、Windows開発機ではDocker Desktopの`/var`がVM内にあり、ホストのエクスプローラやエディタから中身を覗けないため。開発中はDBやレジストリのblobを直接確認したい場面が多い。
+
+`./data`配下の構造は**本番の`/var/sahai`配下とまったく同じ**にしてある(`registry/`・`registry-auth/`・`traefik/dynamic`・`traefik/acme`・`db/`・`uploads/`・`compose-projects/`・`.sahai.env`)。本番との差はルートのパスだけで、どのファイルがどこに出るかを覚え直さなくてよい。
+
+sahai-serverコンテナへのマウントは`- ./data:/var/sahai`とし、**コンテナ内のパスは本番と同じ`/var/sahai`のまま**にしている。そのうえで、dockerdへbindマウント元として渡すホスト側のパスを`SAHAI_HOST_DATA_ROOT`で別に与える(3章「データルートは2つの表現を持つ」)。
+
+```yaml
+- SAHAI_DATA_ROOT=/var/sahai          # コンテナ内から見えるパス
+- SAHAI_HOST_DATA_ROOT=${PWD}/data    # 同じ場所をdockerdから見たパス
+```
+
+`${PWD}`は**Compose自身が注入する**ため、`PWD`環境変数を持たないPowerShellでも解決される(実測: `E:\repos\sahai/data`。この区切り文字が混在した形でもdockerdはbindマウント元として受け付ける)。開発者に絶対パスを手で設定させる必要はない。
+
+**ただし`${PWD}`はcomposeファイルの位置ではなくシェルのカレントディレクトリを指す**。`docker compose -f /path/to/sahai/dev.compose.yaml`を別のディレクトリから実行するとサービスのボリュームが意図しない場所に作られる。**プロジェクトルートから実行すること**。
 
 **Not Serviceページ(1.5章)だけは、開発時もViteではなくsahai-serverが配信する**。`sahai.<domain>`宛てはdev-routes.ymlがViteへ振り分けるが、それ以外のサブドメインはTraefikのcatch-allがsahai-serverへ送るため。sahai-serverはリポジトリを`/app`へbindマウントしているので、ここで返るのは**ホスト側で最後に`npm run build`した`web/dist`の内容**であり、Viteのホットリロードは効かない。
 
@@ -242,7 +278,7 @@ catch-all(`*.<domain>`のうちどのサービス用ルートにもマッチし�
 **初期設定は`setup.sh`/`setup.ps1`が唯一の経路**である。`POST /api/setup`はサーバーが起動時に発行するセットアップトークンの提示を要求し、そのトークンはデータルート(700)配下にあるためコンテナ経由でしか読めない(要件定義書4章「セキュリティモデル」)。Web UIには初期設定画面を持たず、未設定の状態でアクセスするとスクリプトの実行を促す案内だけを表示する。
 
 1. `setup.sh`(Linux/Mac)または`setup.ps1`(Windows)を実行する。スクリプトが以下を一括で行う
-   - レジストリ資格情報の決定と`registry/auth/htpasswd`の生成(auto/manual選択式。registry/README.md参照)
+   - レジストリ資格情報の決定と`/var/sahai/registry-auth/htpasswd`の生成(auto/manual選択式。registry/README.md参照)
    - `docker compose up -d --pull always`(公開済みイメージを取得して起動する)
    - セットアップトークンの取得と`POST /api/setup`による初期設定(ベースドメイン・APIトークン)
    - 任意でDNS/証明書設定(`PUT /api/settings/dns-provider`)とTraefikの再作成

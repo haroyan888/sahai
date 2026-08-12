@@ -11,7 +11,11 @@ dev.env
 dev.env.*
 !dev.env.example
 /traefik/acme/
-/registry/auth/htpasswd
+# 開発Composeのデータルート(本番の/var/sahaiに対応)。生成物しか入らない
+/data/
+# v0.1系までレジストリのhtpasswdを置いていた場所。現在はデータルート配下だが、
+# 移行前のファイルが残っているクローンで秘匿値をコミットしないよう無視し続ける
+/registry/auth/
 # 手動テスト用に作成された秘匿値入りファイル。.env系の命名規則に合わないため個別に無視する
 /local.env
 # Claude Codeのローカル権限設定・実行時ロックファイル。開発者ごとの環境に依存するため追跡しない

@@ -132,6 +132,7 @@ mod tests {
         let config = Config {
             bind_addr: "127.0.0.1:0".to_string(),
             database_path: dir.join("test.sqlite3"),
+            host_data_root: dir.clone(),
             sahai_data_root: dir,
             web_dist_dir: PathBuf::from("/unused"),
             env_file_path: PathBuf::from("/unused/.env"),
@@ -253,6 +254,7 @@ mod tests {
         let config = Config {
             bind_addr: "127.0.0.1:0".to_string(),
             database_path: db_path,
+            host_data_root: dir.clone(),
             sahai_data_root: dir,
             web_dist_dir: PathBuf::from("/unused"),
             env_file_path: PathBuf::from("/unused/.env"),
@@ -308,6 +310,7 @@ mod tests {
             bind_addr: "127.0.0.1:0".to_string(),
             database_path: dir.join("test.sqlite3"),
             sahai_data_root: dir.clone(),
+            host_data_root: dir.clone(),
             web_dist_dir: PathBuf::from("/unused"),
             env_file_path: PathBuf::from("/unused/.env"),
         };

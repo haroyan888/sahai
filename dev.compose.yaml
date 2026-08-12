@@ -29,8 +29,10 @@
 # SAHAI_DOMAINを参照するため、**dev.envのSAHAI_DOMAINとDBのドメインは常に
 # 一致させること**(詳細はdev-routes.yml参照)。
 #
-# 本番データ(/var/sahai)を汚さないよう、DB・レジストリ等のデータは別ディレクトリ
-# (/var/sahai-dev)に分離している。
+# 生成されるデータのルートは本番の/var/sahaiではなくプロジェクト直下の./data。
+# 本番データを汚さないためと、Windows開発機ではDocker Desktopの/varがVM内にあり
+# ホストから中身を覗けないため(container-design.md「開発時のデータルート」参照)。
+# 配下の構造は本番の/var/sahaiとまったく同じにしてある。
 services:
   # registryのhtpasswdをdev.envの値から作る使い捨てコンテナ。本番でsetup.shが
   # 対話で作るものに相当し、開発ではこれによりdev.envが唯一の設定元になる。
@@ -40,9 +42,8 @@ services:
   registry-auth-init:
     image: httpd:2.4-alpine
     volumes:
-      # 本番用の registry/auth/htpasswd を上書きしないよう、dev用データと同じ
-      # /var/sahai-dev 配下に分離する
-      - ./registry/auth:/auth
+      # 本番の /var/sahai/registry-auth に対応する開発時の置き場
+      - ./data/registry-auth:/auth
     environment:
       - SAHAI_REGISTRY_USERNAME=${SAHAI_REGISTRY_USERNAME:-}
       - SAHAI_REGISTRY_PASSWORD=${SAHAI_REGISTRY_PASSWORD:-}
@@ -70,8 +71,8 @@ services:
       registry-auth-init:
         condition: service_completed_successfully
     volumes:
-      - ./registry:/var/lib/registry
-      - ./registry/auth:/auth:ro
+      - ./data/registry:/var/lib/registry
+      - ./data/registry-auth:/auth:ro
     environment:
       - REGISTRY_AUTH=htpasswd
       - REGISTRY_AUTH_HTPASSWD_REALM=Registry Realm
@@ -105,9 +106,9 @@ services:
       # sahai-server(dev)と共有する動的ルートディレクトリ。本番と違い読み書き可能で
       # マウントする(この下に開発専用の静的ルートを1ファイルだけ重ねてbind-mountする
       # ため。:roのままだとマウントポイントを作成できない罠を過去に踏んでいる)
-      - /var/sahai-dev/traefik/dynamic:/var/sahai/traefik/dynamic
+      - ./data/traefik/dynamic:/var/sahai/traefik/dynamic
       - ./traefik/dev-dynamic/dev-routes.yml:/var/sahai/traefik/dynamic/dev-routes.yml:ro
-      - /var/sahai-dev/traefik/acme:/acme
+      - ./data/traefik/acme:/acme
     # DNSプロバイダの認証情報は、sahai-server自身が/var/sahai/.sahai.envを読み、
     # bollard経由でこのコンテナを再作成する際に直接Envとして渡す設計に統一している
     # (traefik::container::recreate_traefik参照。本番のcompose.yaml参照)
@@ -137,9 +138,12 @@ services:
       target: dev
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      # ホストと同一パスでマウントすることが必須(Docker-out-of-Dockerのパス整合性。
-      # compose.yaml参照)。本番の/var/sahaiとは別ディレクトリにして分離する
-      - /var/sahai-dev:/var/sahai
+      # 開発時のデータルートはプロジェクト直下の./data(Windowsホストから中身を
+      # 覗けるようにするため。container-design.md「開発時のデータルート」参照)。
+      # コンテナ内のパスは本番と同じ/var/sahaiのままにすること。この値は
+      # naming::volume_host_pathがサービスの永続ボリュームのbindマウント元を
+      # 組み立てるのに使われ、そのままdockerdへホスト側パスとして渡るため
+      - ./data:/var/sahai
       # ホストのリポジトリをそのままbindマウントし、編集がすぐコンテナに反映される
       - .:/app
       # cargoのビルドキャッシュ・依存キャッシュは名前付きボリュームに逃がす。
@@ -151,7 +155,14 @@ services:
     command: cargo run -p sahai-server
     environment:
       - SAHAI_BIND_ADDR=0.0.0.0:8080
+      # コンテナ内から見えるデータルート。本番と同じ/var/sahaiに揃える
       - SAHAI_DATA_ROOT=/var/sahai
+      # 同じ場所をdockerdから見たときのパス。サービスの永続ボリュームの
+      # bindマウント元だけはこちらから組み立てる(config.rs参照)。
+      # ${PWD}はComposeが自前で注入するためPowerShellでも解決される。ただし
+      # composeファイルの位置ではなく**シェルのカレントディレクトリ**なので、
+      # docker composeはプロジェクトルートから実行すること
+      - SAHAI_HOST_DATA_ROOT=${PWD}/data
       # 以下はDBが空の初回起動時にだけ読まれるシード用。設定してあれば初期設定画面を
       # 通らずにconfigured状態で起動する(SAHAI_API_TOKENとSAHAI_DOMAINの両方が
       # 非空であることがシードの条件)。以降はDBの値が正で、これらは無視される

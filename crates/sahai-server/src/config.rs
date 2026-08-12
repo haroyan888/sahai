@@ -14,8 +14,26 @@ pub struct Config {
     /// SQLite DBファイルパス。例: /var/sahai/db/sahai.sqlite3
     pub database_path: PathBuf,
     /// 永続化データのルート。/var/sahai 。
-    /// ボリュームパス生成・Traefik動的設定の書き出し先はすべてこの配下。
+    /// **sahai-server自身のファイルI/O**(DB・uploads・compose-projects・
+    /// Traefik動的設定・ボリュームディレクトリの削除)はすべてこの配下で行う。
+    /// つまりこれは「sahai-serverコンテナ内から見えるパス」。
     pub sahai_data_root: PathBuf,
+    /// 同じデータルートを**dockerdから見たとき**のパス。`SAHAI_HOST_DATA_ROOT`、
+    /// 未設定なら`sahai_data_root`と同値(本番はホストと同一パスでマウントするため
+    /// 常にこちら)。
+    ///
+    /// サービスの永続ボリュームのbindマウント元(`naming::volume_host_path`)だけは、
+    /// 文字列がそのままdockerdへ渡り**ホスト側のパスとして解決される**ため、
+    /// `sahai_data_root`ではなくこちらから組み立てなければならない
+    /// (Docker-out-of-Docker。container-design.md 3章)。
+    ///
+    /// 2つに分けているのは開発時のため。開発ではデータルートをプロジェクト直下の
+    /// `./data`に置くが、コンテナ内では`/var/sahai`、ホストでは`E:/repos/sahai/data`
+    /// のように**同じ場所を指す文字列が両者で異なる**。Windowsではコンテナ側マウント先に
+    /// Windowsパスを指定できず、同一パスでのマウントが原理的に成立しない。
+    /// VS Code Dev Containersが`localWorkspaceFolder`と`containerWorkspaceFolder`を
+    /// 別々に公開しているのと同じ理由。
+    pub host_data_root: PathBuf,
     /// Web UI(React SPA)のビルド済み静的ファイル配信元ディレクトリ。
     /// Dockerfileが`web/dist`をこのパスへコピーし、sahai-server自身が
     /// `tower-http::ServeDir`で配信する。
@@ -49,12 +67,17 @@ impl Config {
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("/app/web/dist"));
         let env_file_path = sahai_data_root.join(".sahai.env");
+        // 未設定なら同一パスマウント(本番)とみなす。既存環境の挙動は変わらない
+        let host_data_root = std::env::var("SAHAI_HOST_DATA_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| sahai_data_root.clone());
 
         Ok(Config {
             bind_addr: std::env::var("SAHAI_BIND_ADDR")
                 .unwrap_or_else(|_| "0.0.0.0:8080".to_string()),
             database_path,
             sahai_data_root,
+            host_data_root,
             web_dist_dir,
             env_file_path,
         })
@@ -65,8 +88,51 @@ impl Config {
         self.sahai_data_root.join("traefik").join("dynamic")
     }
 
-    /// サービスのボリュームルート。
+    /// サービスのボリュームルート。**削除(purge_volumes)のためのローカルI/O用**なので
+    /// `sahai_data_root`側から組み立てる。dockerdへ渡すマウント元は
+    /// `naming::volume_host_path`が`host_data_root`から作る、同じ場所の別表現。
     pub fn services_volume_root(&self) -> PathBuf {
         self.sahai_data_root.join("services")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `SAHAI_HOST_DATA_ROOT`未設定なら`SAHAI_DATA_ROOT`と同値になる。
+    /// 本番はホストと同一パスでマウントするため常にこの経路で、
+    /// この既定が崩れると既存環境のボリュームパスが変わってしまう。
+    #[test]
+    fn host_data_root_defaults_to_data_root() {
+        let data_root = PathBuf::from("/var/sahai");
+        let host_data_root = None::<String>
+            .map(PathBuf::from)
+            .unwrap_or_else(|| data_root.clone());
+        assert_eq!(host_data_root, data_root);
+    }
+
+    /// 開発時のように両者が食い違う場合、bindマウント元はhost側から組み立てる。
+    #[test]
+    fn volume_bind_source_is_built_from_host_data_root() {
+        let config = Config {
+            bind_addr: "127.0.0.1:0".to_string(),
+            database_path: PathBuf::from("/var/sahai/db/sahai.sqlite3"),
+            sahai_data_root: PathBuf::from("/var/sahai"),
+            host_data_root: PathBuf::from("E:/repos/sahai/data"),
+            web_dist_dir: PathBuf::from("/app/web/dist"),
+            env_file_path: PathBuf::from("/var/sahai/.sahai.env"),
+        };
+
+        // dockerdへ渡す側はホスト表現
+        assert_eq!(
+            sahai_core::naming::volume_host_path(&config.host_data_root, 1, "/var/lib/mysql"),
+            "E:/repos/sahai/data/services/1/var-lib-mysql"
+        );
+        // 自身が削除するときはコンテナ内表現。同じ場所を別の文字列で指している
+        assert_eq!(
+            config.services_volume_root().join("1"),
+            PathBuf::from("/var/sahai/services/1")
+        );
     }
 }

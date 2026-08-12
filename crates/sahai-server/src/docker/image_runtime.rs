@@ -23,18 +23,20 @@ use super::{ContainerLifecycle, DockerError};
 
 pub struct ImageRuntime {
     docker: Docker,
-    sahai_data_root: PathBuf,
+    /// bindマウント元の組み立て専用。dockerdがホスト側パスとして解決するため、
+    /// コンテナ内から見えるパス(Config::sahai_data_root)とは別物(config.rs参照)
+    host_data_root: PathBuf,
     /// pullに添えるレジストリ資格情報の取得元。Web UIから変更されるため
     /// 構築時にコピーせず、呼び出しのたびに最新値を読む
     settings: SharedSettings,
 }
 
 impl ImageRuntime {
-    pub fn new(docker: Docker, sahai_data_root: PathBuf, settings: SharedSettings) -> Self {
+    pub fn new(docker: Docker, host_data_root: PathBuf, settings: SharedSettings) -> Self {
         ImageRuntime {
             docker,
             settings,
-            sahai_data_root,
+            host_data_root,
         }
     }
 
@@ -78,7 +80,7 @@ impl ImageRuntime {
     pub fn build_container_config(
         &self,
         service: &ServiceDetail,
-        sahai_data_root: &Path,
+        host_data_root: &Path,
     ) -> Result<(String, Config<String>), DockerError> {
         let container = service.containers.first().ok_or_else(|| {
             DockerError::Other("image型サービスにコンテナが存在しません".to_string())
@@ -113,7 +115,7 @@ impl ImageRuntime {
             .iter()
             .map(|v| {
                 let host_path = sahai_core::naming::volume_host_path(
-                    sahai_data_root,
+                    host_data_root,
                     service.service.id,
                     &v.container_path,
                 );
@@ -171,7 +173,7 @@ impl ContainerLifecycle for ImageRuntime {
             .ok_or_else(|| DockerError::Other("imageが未設定です".to_string()))?;
         self.pull(image).await?;
 
-        let (name, config) = self.build_container_config(service, &self.sahai_data_root)?;
+        let (name, config) = self.build_container_config(service, &self.host_data_root)?;
 
         // 既存コンテナが残っていれば掃除してから作り直す(冪等性の担保)
         let _ = self

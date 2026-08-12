@@ -96,8 +96,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let settings: settings::SharedSettings = Arc::new(RwLock::new(initial_settings));
 
-    let docker = DockerClients::connect(settings.clone(), config.sahai_data_root.clone())
-        .map_err(|e| e.to_string())?;
+    let docker = DockerClients::connect(
+        settings.clone(),
+        config.sahai_data_root.clone(),
+        config.host_data_root.clone(),
+    )
+    .map_err(|e| e.to_string())?;
 
     // `sahai service create`(サーバー側build+push)用の資格情報がDBに設定されていれば、
     // 起動時に一度だけdocker loginしておく(以降のpushはコンテナ内の
