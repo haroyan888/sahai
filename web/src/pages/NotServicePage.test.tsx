@@ -41,7 +41,8 @@ describe('NotServicePage', () => {
     })
   })
 
-  it('found=trueの場合、サービス名・案内文・ポート一覧を表示する', async () => {
+  // どの状態でもh1に何が起きたか(エラー名)、pにその詳細、という構成で表示する。
+  it('found=trueの場合、h1に見出し・pにサービス名を含む詳細・ポート一覧を表示する', async () => {
     const fetchMock = vi.mocked(fetch)
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
@@ -54,32 +55,40 @@ describe('NotServicePage', () => {
     render(<NotServicePage apiBaseUrl={BASE_URL} hostname="mysql.example.com" />)
 
     await waitFor(() => {
-      expect(screen.getByText('mysql')).toBeInTheDocument()
-      expect(screen.getByText(/下記のポートへ直接接続してください/)).toBeInTheDocument()
+      expect(
+        screen.getByRole('heading', { name: 'HTTP/HTTPSでは公開されていません' }),
+      ).toBeInTheDocument()
+      expect(
+        screen.getByText(/mysql はHTTP\/HTTPSを提供していません。下記のポートへ直接接続してください。/),
+      ).toBeInTheDocument()
       expect(screen.getByText('20001')).toBeInTheDocument()
       expect(screen.getByText('3306')).toBeInTheDocument()
     })
   })
 
-  it('found=falseの場合、サービスが見つからない旨を表示する', async () => {
+  it('found=falseの場合、h1に見出し・pにホスト名を含む詳細を表示する', async () => {
     const fetchMock = vi.mocked(fetch)
     fetchMock.mockResolvedValueOnce(jsonResponse({ found: false }))
 
     render(<NotServicePage apiBaseUrl={BASE_URL} hostname="doesnotexist.example.com" />)
 
     await waitFor(() => {
-      expect(screen.getByText(/見つかりません/)).toBeInTheDocument()
+      expect(screen.getByRole('heading', { name: 'サービスが見つかりません' })).toBeInTheDocument()
+      expect(
+        screen.getByText(/doesnotexist.example.com に対応するサービスは提供されていません。/),
+      ).toBeInTheDocument()
     })
   })
 
-  it('取得に失敗した場合はエラーメッセージを表示する', async () => {
+  it('取得に失敗した場合、h1に見出し・pに詳細を表示する', async () => {
     const fetchMock = vi.mocked(fetch)
     fetchMock.mockRejectedValueOnce(new Error('network error'))
 
     render(<NotServicePage apiBaseUrl={BASE_URL} hostname="mysql.example.com" />)
 
     await waitFor(() => {
-      expect(screen.getByText(/取得に失敗しました/)).toBeInTheDocument()
+      expect(screen.getByRole('heading', { name: '取得に失敗しました' })).toBeInTheDocument()
+      expect(screen.getByText(/mysql.example.com の状態を確認できませんでした。/)).toBeInTheDocument()
     })
   })
 })

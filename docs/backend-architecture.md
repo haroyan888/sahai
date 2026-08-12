@@ -76,6 +76,8 @@ sahai-server/src/
 
 `api/not_http_service.rs`は`GET /api/not-service`(認証不要の公開API。api-design.md 3章参照)を提供する。以前はaxumの`.fallback()`としてTraefikからのHostヘッダー転送を直接HTML描画していたが、Not Serviceページの表示自体をWeb UI側に統一したため、現在は`authed`ルーターの外側に登録された通常のルート(`?host=`パラメータで明示的に問い合わせるJSON API)になっている。
 
+Hostヘッダーを見るのは`api/mod.rs`のSPAフォールバックだけで、そこでの役目も「管理画面を返すか`/not-service`へ寄せるか」の振り分けに限られる(要件定義書6章「Not Serviceページへの誘導」・[container-design.md](./container-design.md) 1.5章)。サービスの特定自体は上記APIが`?host=`で受け取った値をもとに行う。
+
 `api/mod.rs`のRouter組み立て時、`tower_http::cors::CorsLayer::permissive()`を`.layer()`で追加している([api-design.md](./api-design.md) 1章「CORS」参照)。認証層(`auth::require_bearer_token`)とは独立したレイヤーであり、認証の要否には影響しない。
 
 ### コラム: なぜ`inspector`は`ContainerLifecycle`の外に出すか

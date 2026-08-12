@@ -291,30 +291,35 @@ sequenceDiagram
 
 ## 10. 非HTTPサービス・未登録サブドメインへのアクセス(Not Serviceページ)
 
-`is_http`ポートがないサービス、および未登録のサブドメインの両方を、Web UIコンテナが受ける設計に統一している(要件定義書6章)。Web UIは静的ファイルを返すだけのSPAであり、Hostヘッダーの違いを意識しない。実際にどのサービスか(あるいは未登録か)を判定するのはブラウザ上のJavaScriptの役目になる。
+`is_http`ポートがないサービス、および未登録のサブドメインの両方を、Control plane自身が受ける設計に統一している(要件定義書6章)。ただしSPAは`/`で起動すると認証ゲートに落ちてログイン画面になってしまうため、**SPAを返す前にHostヘッダーを見て`/not-service`へ寄せる**。実際にどのサービスか(あるいは未登録か)を判定するのは、そこから先のブラウザ上のJavaScriptの役目になる。
 
 ```mermaid
 sequenceDiagram
     actor User as 利用者
     participant Traefik
-    participant WebUI as Web UI(SPA)
-    participant CP as Control Plane
+    participant CP as Control Plane<br/>(SPA配信 + API)
+    participant SPA as ブラウザ上のSPA
     participant DB as SQLite
 
-    User->>Traefik: HTTPS mysql.example.com
-    Note over Traefik: 個々のサービス用ルート(Host(`mysql.example.com`)等)に<br/>マッチすればそちらを優先。マッチしなければ<br/>ワイルドカードcatch-allルートがWeb UIへ転送する
-    Traefik->>WebUI: index.html等の静的ファイルを返す(Hostヘッダーは見ない)
-    WebUI->>WebUI: window.location.hostnameから"mysql.example.com"を取得
-    WebUI->>CP: GET https://sahai.example.com/api/not-service?host=mysql.example.com<br/>(別オリジンからのアクセスのためCORS経由。認証不要)
+    User->>Traefik: HTTPS mysql.example.com/
+    Note over Traefik: 個々のサービス用ルート(Host(`mysql.example.com`)等)に<br/>マッチすればそちらを優先。マッチしなければ<br/>ワイルドカードcatch-allルートがCPへ転送する
+    Traefik->>CP: GET / (Host: mysql.example.com)
+    Note over CP: SPAフォールバックでHostヘッダーを判定。<br/>sahai.example.com以外のサブドメインなので<br/>管理画面ではなく案内ページへ寄せる
+    CP-->>User: 303 See Other → /not-service
+    User->>Traefik: HTTPS mysql.example.com/not-service
+    Traefik->>CP: GET /not-service
+    CP-->>SPA: index.html(+ /assets/* はそのまま配信)
+    SPA->>SPA: window.location.hostnameから"mysql.example.com"を取得
+    SPA->>CP: GET /api/not-service?host=mysql.example.com<br/>(同一オリジン。catch-allが/apiもCPへ転送する。認証不要)
     CP->>DB: host(subdomain)からサービス・ポート一覧を検索
     alt 登録済み(is_httpポートなし)
         DB-->>CP: サービスあり
-        CP-->>WebUI: { found: true, name, ports }
-        WebUI-->>User: 「HTTP/HTTPSを提供していません」+ポート一覧を表示
+        CP-->>SPA: { found: true, name, ports }
+        SPA-->>User: 「HTTP/HTTPSを提供していません」+ポート一覧を表示
     else 未登録サブドメイン
         DB-->>CP: 該当なし
-        CP-->>WebUI: { found: false }
-        WebUI-->>User: 「サービスが見つかりません」を表示
+        CP-->>SPA: { found: false }
+        SPA-->>User: 「サービスが見つかりません」を表示
     end
 ```
 

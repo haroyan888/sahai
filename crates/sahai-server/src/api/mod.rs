@@ -4,13 +4,20 @@ pub mod services;
 pub mod settings;
 pub mod setup;
 
-use axum::extract::DefaultBodyLimit;
+use axum::extract::{DefaultBodyLimit, Request, State};
+use axum::handler::Handler;
+use axum::http::header;
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::Router;
+use tower::ServiceExt;
 use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::state::AppState;
+
+/// Not Serviceページ(Web UI側のクライアントサイドルート)のパス。
+const NOT_SERVICE_PATH: &str = "/not-service";
 
 pub fn router(state: AppState) -> Router {
     // Web UI(React SPAのビルド済み静的ファイル)をsahai-server自身が配信する。
@@ -18,10 +25,15 @@ pub fn router(state: AppState) -> Router {
     // すべてindex.htmlへフォールバックする(SPAの標準パターン)
     // `not_found_service`はステータスを常に404へ強制するため使えない(SPAの
     // クライアントサイドルーティングには200でindex.htmlを返す必要がある)。
-    // ステータスを元のまま(200)にする`fallback`を使う
-    let web_dist_dir = state.config.web_dist_dir.clone();
-    let serve_web_ui =
-        ServeDir::new(&web_dist_dir).fallback(ServeFile::new(web_dist_dir.join("index.html")));
+    // ステータスを元のまま(200)にする`fallback`を使う。
+    // フォールバック先はindex.htmlを返すだけの`ServeFile`ではなく`spa_fallback`
+    // ハンドラにして、アクセス元のホストによってはNot Serviceページへ寄せる。
+    // `append_index_html_on_directories(false)`が要る: 既定では`/`宛てを
+    // `ServeDir`自身がindex.htmlとして直接返してしまい、Traefikのcatch-allが
+    // 転送してくる典型的なパスであるにもかかわらずフォールバックに届かない
+    let serve_web_ui = ServeDir::new(&state.config.web_dist_dir)
+        .append_index_html_on_directories(false)
+        .fallback(spa_fallback.with_state(state.clone()));
 
     // axum 0.8の動的パスセグメントは`{name}`構文(0.7時代の`:name`はここでは使えない)。
     let authed = Router::new()
@@ -90,6 +102,55 @@ pub fn router(state: AppState) -> Router {
         .fallback_service(serve_web_ui)
         .layer(CorsLayer::permissive())
         .with_state(state)
+}
+
+/// SPAのエントリポイント(index.html)を返すフォールバック。
+///
+/// Traefikのcatch-allルートは`*.<domain>`宛でどのサービス用ルートにもマッチしなかった
+/// リクエストを、パス`/`のままここへ転送してくる。そのままindex.htmlを返すとSPAは
+/// 認証ゲートに落ち、エンドユーザーには身に覚えのないログイン画面が出てしまうため、
+/// 管理画面(`sahai.<domain>`)以外のサブドメイン宛てならNot Serviceページへ寄せる。
+///
+/// この判定を`ServeDir`の前段ではなくフォールバック側で行うのは、実在するアセット
+/// (`/assets/*`等)を巻き込まないため。前段だとNot Serviceページ自身のJS/CSSまで
+/// リダイレクトされ、ページが描画できなくなる。
+async fn spa_fallback(State(state): State<AppState>, req: Request) -> Response {
+    let domain = state.settings.read().await.domain.clone();
+    let host = req
+        .headers()
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok());
+
+    if needs_not_service_redirect(host, &domain, req.uri().path()) {
+        // 303 See Other。案内ページは常にGETで取りに行かせる
+        return Redirect::to(NOT_SERVICE_PATH).into_response();
+    }
+
+    ServeFile::new(state.config.web_dist_dir.join("index.html"))
+        .oneshot(req)
+        .await
+        .into_response()
+}
+
+/// Not Serviceページへ寄せるべきアクセスかを判定する。
+///
+/// ベースドメイン配下のサブドメインだけを対象にすることで、`localhost`や生IPでの
+/// 直接アクセス、およびベースドメインが未確定な初期設定前を巻き込まない
+/// (Traefikのcatch-allルートも`*.<domain>`にしかマッチせず、判定範囲は一致する)。
+/// リダイレクト先自身を除外しないと無限ループになる。
+fn needs_not_service_redirect(host: Option<&str>, domain: &str, path: &str) -> bool {
+    if domain.is_empty() || path == NOT_SERVICE_PATH {
+        return false;
+    }
+    let Some(host) = host else {
+        return false;
+    };
+    // Hostヘッダーは`example.com:8443`のようにポートを伴いうる。
+    // ホスト名自体の大文字小文字は区別されない
+    let hostname = host.split(':').next().unwrap_or(host).to_ascii_lowercase();
+    let domain = domain.to_ascii_lowercase();
+
+    hostname != format!("sahai.{domain}") && hostname.ends_with(&format!(".{domain}"))
 }
 
 #[cfg(test)]
@@ -696,6 +757,108 @@ mod router_tests {
         assert_eq!(bytes, "console.log('app')".as_bytes());
     }
 
+    /// Traefikのcatch-allルートに拾われたリクエスト(登録されていないサブドメイン宛て)。
+    /// そのままSPAを返すと認証ゲートに落ちてログイン画面が出てしまうため、
+    /// 案内ページ(/not-service)へ寄せる
+    #[tokio::test]
+    async fn redirects_to_not_service_page_for_unregistered_subdomain() {
+        let state = test_state().await;
+        write_fake_web_dist(&state).await;
+        let app = super::router(state);
+
+        let request = Request::builder()
+            .uri("/")
+            .header(axum::http::header::HOST, "nosuch.example.com")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::LOCATION)
+                .and_then(|v| v.to_str().ok()),
+            Some("/not-service")
+        );
+    }
+
+    /// 管理画面のホストは従来どおりSPAを返す(ログイン画面へ到達できること)。
+    #[tokio::test]
+    async fn serves_spa_for_admin_host() {
+        let state = test_state().await;
+        write_fake_web_dist(&state).await;
+        let app = super::router(state);
+
+        let request = Request::builder()
+            .uri("/")
+            .header(axum::http::header::HOST, "sahai.example.com")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(bytes, "<html>spa-shell</html>".as_bytes());
+    }
+
+    /// 実在するアセットはリダイレクト対象外。リダイレクトしてしまうと、
+    /// Not Serviceページ自身のJS/CSSが読めず白画面になる
+    #[tokio::test]
+    async fn does_not_redirect_existing_assets_on_unregistered_subdomain() {
+        let state = test_state().await;
+        write_fake_web_dist(&state).await;
+        let app = super::router(state);
+
+        let request = Request::builder()
+            .uri("/assets/app.js")
+            .header(axum::http::header::HOST, "nosuch.example.com")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(bytes, "console.log('app')".as_bytes());
+    }
+
+    /// リダイレクト先自身はSPAを返す(無限リダイレクトにしない)。
+    #[tokio::test]
+    async fn serves_spa_for_not_service_path_itself() {
+        let state = test_state().await;
+        write_fake_web_dist(&state).await;
+        let app = super::router(state);
+
+        let request = Request::builder()
+            .uri("/not-service")
+            .header(axum::http::header::HOST, "nosuch.example.com")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(bytes, "<html>spa-shell</html>".as_bytes());
+    }
+
+    /// 初期設定前(ベースドメイン未確定)は判定できないため、常にSPAを返す。
+    /// ここでリダイレクトすると初期設定の案内画面に到達できなくなる
+    #[tokio::test]
+    async fn serves_spa_when_domain_is_not_configured_yet() {
+        let state = test_state_unconfigured().await;
+        write_fake_web_dist(&state).await;
+        let app = super::router(state);
+
+        let request = Request::builder()
+            .uri("/")
+            .header(axum::http::header::HOST, "nosuch.example.com")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
     #[tokio::test]
     async fn falls_back_to_index_html_for_unknown_client_side_routes() {
         // React Routerが処理する/services等のパスはディスク上にファイルが無いため、
@@ -713,5 +876,82 @@ mod router_tests {
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(bytes, "<html>spa-shell</html>".as_bytes());
+    }
+}
+
+#[cfg(test)]
+mod not_service_redirect_tests {
+    use super::needs_not_service_redirect;
+
+    const DOMAIN: &str = "example.com";
+
+    fn redirects(host: &str) -> bool {
+        needs_not_service_redirect(Some(host), DOMAIN, "/")
+    }
+
+    #[test]
+    fn unregistered_subdomain_is_redirected() {
+        assert!(redirects("nosuch.example.com"));
+    }
+
+    /// 非HTTPサービスのサブドメインも同じ案内ページ(ポート一覧)へ寄せる。
+    #[test]
+    fn non_http_service_subdomain_is_redirected() {
+        assert!(redirects("mysql.example.com"));
+    }
+
+    #[test]
+    fn admin_host_is_not_redirected() {
+        assert!(!redirects("sahai.example.com"));
+    }
+
+    /// `localhost`・生IPはTraefikのcatch-all(`*.<domain>`)の対象外。
+    /// 開発時やポートフォワード経由の直接アクセスを巻き込まない
+    #[test]
+    fn hosts_outside_the_base_domain_are_not_redirected() {
+        assert!(!redirects("localhost"));
+        assert!(!redirects("127.0.0.1"));
+        assert!(!redirects("sahai.other.test"));
+        // ベースドメインそのもの(apex)もサブドメインではない
+        assert!(!redirects("example.com"));
+        // 部分一致でベースドメイン扱いしない(`.`区切りを要求する)
+        assert!(!redirects("notexample.com"));
+    }
+
+    #[test]
+    fn host_header_port_is_ignored() {
+        assert!(redirects("nosuch.example.com:8443"));
+        assert!(!redirects("sahai.example.com:8443"));
+    }
+
+    #[test]
+    fn host_header_case_is_ignored() {
+        assert!(!redirects("Sahai.Example.COM"));
+        assert!(redirects("NoSuch.Example.COM"));
+    }
+
+    /// リダイレクト先自身は寄せない(無限リダイレクトの防止)。
+    #[test]
+    fn not_service_path_itself_is_not_redirected() {
+        assert!(!needs_not_service_redirect(
+            Some("nosuch.example.com"),
+            DOMAIN,
+            "/not-service"
+        ));
+    }
+
+    /// 初期設定前はベースドメインが未確定で判定できない。
+    #[test]
+    fn empty_domain_never_redirects() {
+        assert!(!needs_not_service_redirect(
+            Some("nosuch.example.com"),
+            "",
+            "/"
+        ));
+    }
+
+    #[test]
+    fn missing_host_header_never_redirects() {
+        assert!(!needs_not_service_redirect(None, DOMAIN, "/"));
     }
 }

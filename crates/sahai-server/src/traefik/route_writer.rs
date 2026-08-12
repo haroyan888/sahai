@@ -33,9 +33,6 @@ struct HttpConfig {
 struct Router {
     rule: String,
     service: String,
-    /// `SAHAI_HTTPS_REDIRECT=true`(既定)のときのみ`["websecure"]`に絞る。
-    /// falseのときは省略し、web(:80)・websecure(:443)の両方で素通しする
-    /// (自己署名証明書のローカルテスト環境でHTTPSアップグレードを回避するため)。
     #[serde(rename = "entryPoints", skip_serializing_if = "Option::is_none")]
     entry_points: Option<Vec<String>>,
     /// `tls`キーの有無がプロトコル可用性を直接左右する(実機検証で判明):
@@ -43,15 +40,17 @@ struct Router {
     /// では一切応答せず、逆に`tls`を省略するとweb(:80)専用になりwebsecure(:443)
     /// では一切応答しない(entryPointsフィールドの指定に関わらずこの挙動になる)。
     /// 単一ルーターで両プロトコルに応答させることはできないため、
-    /// https_redirect=falseのときは省略し、web(:80)専用の平文httpルーターにする。
+    /// https_redirect=falseのときはweb用とwebsecure用の2本に分ける(tls_twin参照)。
     #[serde(skip_serializing_if = "Option::is_none")]
     tls: Option<Tls>,
 }
 
 #[derive(Debug, Serialize)]
 struct Tls {
-    #[serde(rename = "certResolver")]
-    cert_resolver: String,
+    /// https_redirect=falseのwebsecure用ルーターでは省略する。ローカルドメインで
+    /// 無駄なACME証明書取得を試みないためで、Traefik既定の自己署名証明書で応答する。
+    #[serde(rename = "certResolver", skip_serializing_if = "Option::is_none")]
+    cert_resolver: Option<String>,
 }
 
 /// 管理画面の静的ルート専用。per-serviceのRouter/Tlsとは異なり`priority`と
@@ -172,19 +171,43 @@ impl RouteWriter {
         let https_redirect = self.settings.read().await.https_redirect;
         let target_url = self.resolve_target_url(service);
         let router_name = service.service.name.clone();
+        let rule = format!("Host(`{}`)", service.service.subdomain);
 
         let mut routers = std::collections::BTreeMap::new();
-        routers.insert(
-            router_name.clone(),
-            Router {
-                rule: format!("Host(`{}`)", service.service.subdomain),
-                service: router_name.clone(),
-                entry_points: websecure_only_entry_points(https_redirect),
-                tls: https_redirect.then(|| Tls {
-                    cert_resolver: self.cert_resolver.clone(),
-                }),
-            },
-        );
+        if https_redirect {
+            routers.insert(
+                router_name.clone(),
+                Router {
+                    rule,
+                    service: router_name.clone(),
+                    entry_points: Some(vec![ENTRY_POINT_WEBSECURE.to_string()]),
+                    tls: Some(Tls {
+                        cert_resolver: Some(self.cert_resolver.clone()),
+                    }),
+                },
+            );
+        } else {
+            routers.insert(
+                router_name.clone(),
+                Router {
+                    rule: rule.clone(),
+                    service: router_name.clone(),
+                    entry_points: Some(vec![ENTRY_POINT_WEB.to_string()]),
+                    tls: None,
+                },
+            );
+            routers.insert(
+                tls_twin_router_name(&router_name),
+                Router {
+                    rule,
+                    service: router_name.clone(),
+                    entry_points: Some(vec![ENTRY_POINT_WEBSECURE.to_string()]),
+                    tls: Some(Tls {
+                        cert_resolver: None,
+                    }),
+                },
+            );
+        }
 
         let mut services = std::collections::BTreeMap::new();
         services.insert(
@@ -230,19 +253,17 @@ impl RouteWriter {
         // ルート(ルーター名=サービス名)と同じ名前空間に載る。サービス名は[a-z0-9-]
         // しか使えないので、アンダースコアを含めておけばどんなサービス名とも衝突しない
         let mut routers = std::collections::BTreeMap::new();
-        routers.insert(
-            "sahai_app".to_string(),
-            StaticRouter {
+        insert_static_router_pair(
+            &mut routers,
+            StaticRouteSpec {
+                name: "sahai_app",
+                service: "sahai_app",
                 rule: format!("Host(`{admin_host}`)"),
-                service: "sahai_app".to_string(),
                 priority: 100,
-                entry_points: websecure_only_entry_points(https_redirect),
-                middlewares: None,
-                tls: https_redirect.then(|| StaticTls {
-                    cert_resolver: Some(self.cert_resolver.clone()),
-                    domains: None,
-                }),
+                cert_resolver: &self.cert_resolver,
+                domains: None,
             },
+            https_redirect,
         );
         routers.insert(
             "sahai_registry".to_string(),
@@ -267,24 +288,22 @@ impl RouteWriter {
                 }),
             },
         );
-        routers.insert(
-            "sahai_catchall".to_string(),
-            StaticRouter {
+        insert_static_router_pair(
+            &mut routers,
+            StaticRouteSpec {
+                name: "sahai_catchall",
+                service: "sahai_app",
                 // per-serviceルーター(Host(`<name>.<domain>`)、動的生成)・上記2つより
                 // 優先度を下げ、どれにもマッチしなかった場合の受け皿とする
                 rule: format!(r"HostRegexp(`^.+\.{}$`)", domain.replace('.', r"\.")),
-                service: "sahai_app".to_string(),
                 priority: 1,
-                entry_points: websecure_only_entry_points(https_redirect),
-                middlewares: None,
-                tls: https_redirect.then(|| StaticTls {
-                    cert_resolver: Some(self.cert_resolver.clone()),
-                    domains: Some(vec![TlsDomain {
-                        main: domain.clone(),
-                        sans: vec![format!("*.{domain}")],
-                    }]),
-                }),
+                cert_resolver: &self.cert_resolver,
+                domains: Some(vec![TlsDomain {
+                    main: domain.clone(),
+                    sans: vec![format!("*.{domain}")],
+                }]),
             },
+            https_redirect,
         );
 
         let mut middlewares = None;
@@ -360,16 +379,19 @@ impl RouteWriter {
     /// 通常のdomainベースのルートに置き換わる
     pub async fn write_bootstrap_routes(&self) -> Result<(), TraefikError> {
         let mut routers = std::collections::BTreeMap::new();
-        routers.insert(
-            "sahai_app".to_string(),
-            StaticRouter {
+        // 初期設定前はhttps_redirectの設定値も未確定なため、http・httpsのどちらで
+        // アクセスされても初期設定画面へ到達できるよう常に両方を書き出す
+        insert_static_router_pair(
+            &mut routers,
+            StaticRouteSpec {
+                name: "sahai_app",
+                service: "sahai_app",
                 rule: "PathPrefix(`/`)".to_string(),
-                service: "sahai_app".to_string(),
                 priority: 1,
-                entry_points: None,
-                middlewares: None,
-                tls: None,
+                cert_resolver: &self.cert_resolver,
+                domains: None,
             },
+            false,
         );
 
         let mut services = std::collections::BTreeMap::new();
@@ -429,15 +451,94 @@ impl RouteWriter {
     }
 }
 
-/// `https_redirect`が有効なときのみルーターをwebsecure(:443)限定にする。
-/// 無効時はNoneを返し、entryPoints未指定(既定で全entryPointに公開)のまま
-/// web(:80)からも平文httpで直接アクセスできるようにする。
-fn websecure_only_entry_points(https_redirect: bool) -> Option<Vec<String>> {
+const ENTRY_POINT_WEB: &str = "web";
+const ENTRY_POINT_WEBSECURE: &str = "websecure";
+
+/// `https_redirect=false`のとき、web用ルーターと対で書き出すwebsecure用ルーターの名前。
+/// サービス名に`_`は使えないため、どのサービス名とも衝突しない。
+fn tls_twin_router_name(base: &str) -> String {
+    format!("{base}_tls")
+}
+
+/// 1つの論理ルートに対応するルーターを登録する。
+///
+/// `https_redirect=true`ならwebsecure(:443)専用の1本だけを書き出す
+/// (web(:80)は`sahai_https_redirect`ミドルウェアがhttpsへ飛ばす)。
+/// falseのときはweb用とwebsecure用の**2本**に分ける。`tls`キーの有無が
+/// プロトコル可用性を直接左右し、単一ルーターでは両プロトコルに応答できないため
+/// (Router.tls参照)。2本に分けないと、片方のプロトコルだけ404になり
+/// http・httpsで挙動が食い違う。
+struct StaticRouteSpec<'a> {
+    name: &'a str,
+    /// ルーター名とは別に指定する。catchallは`sahai_app`へ相乗りするため一致しない。
+    service: &'a str,
+    rule: String,
+    priority: u32,
+    /// https_redirect=trueのときのwebsecure用ルーターに付ける証明書リゾルバ。
+    cert_resolver: &'a str,
+    /// ワイルドカード証明書が要るルート(catchall)のみ指定する。
+    domains: Option<Vec<TlsDomain>>,
+}
+
+fn insert_static_router_pair(
+    routers: &mut std::collections::BTreeMap<String, StaticRouter>,
+    spec: StaticRouteSpec<'_>,
+    https_redirect: bool,
+) {
+    let StaticRouteSpec {
+        name,
+        service,
+        rule,
+        priority,
+        cert_resolver,
+        domains,
+    } = spec;
+
     if https_redirect {
-        Some(vec!["websecure".to_string()])
-    } else {
-        None
+        routers.insert(
+            name.to_string(),
+            StaticRouter {
+                rule,
+                service: service.to_string(),
+                priority,
+                entry_points: Some(vec![ENTRY_POINT_WEBSECURE.to_string()]),
+                middlewares: None,
+                tls: Some(StaticTls {
+                    cert_resolver: Some(cert_resolver.to_string()),
+                    domains,
+                }),
+            },
+        );
+        return;
     }
+
+    routers.insert(
+        name.to_string(),
+        StaticRouter {
+            rule: rule.clone(),
+            service: service.to_string(),
+            priority,
+            entry_points: Some(vec![ENTRY_POINT_WEB.to_string()]),
+            middlewares: None,
+            tls: None,
+        },
+    );
+    routers.insert(
+        tls_twin_router_name(name),
+        StaticRouter {
+            rule,
+            service: service.to_string(),
+            priority,
+            entry_points: Some(vec![ENTRY_POINT_WEBSECURE.to_string()]),
+            middlewares: None,
+            // certResolverもdomainsも付けない。ローカルドメインでの無駄なACME証明書
+            // 取得の試み(失敗ログ)を避け、Traefik既定の自己署名証明書で応答する
+            tls: Some(StaticTls {
+                cert_resolver: None,
+                domains: None,
+            }),
+        },
+    );
 }
 
 #[cfg(test)]
@@ -766,6 +867,13 @@ mod tests {
             Some(1)
         );
         assert!(parsed["http"]["routers"]["sahai_app"]["tls"].is_null());
+        // 初期設定前はhttps_redirectの設定値も未確定なため、httpでもhttpsでも
+        // 初期設定画面へ到達できるようwebsecure用ルーターも書き出す
+        assert_eq!(
+            parsed["http"]["routers"]["sahai_app_tls"]["rule"].as_str(),
+            Some("PathPrefix(`/`)")
+        );
+        assert!(parsed["http"]["routers"]["sahai_app_tls"]["tls"].is_mapping());
         assert_eq!(
             parsed["http"]["services"]["sahai_app"]["loadBalancer"]["servers"][0]["url"].as_str(),
             Some("http://sahai-server:8080")
@@ -859,14 +967,13 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 
-    // SAHAI_HTTPS_REDIRECT=falseのとき、per-serviceルートはentryPointsを指定せず
-    // (既定で全entryPointに公開)、web(:80)からも平文httpで直接アクセスできる。
-    // 自己署名証明書のローカルテスト環境で、httpsへの強制アップグレードによる
-    // 証明書検証エラーを回避するために必要(実機の`sahai container push --insecure`検証で
-    // 発覚: CLIの--insecureはAPIへの接続にのみ効き、Traefik経由のHTTPSアップグレードには
-    // 無関係だったため、こちらも切り替え可能にした)。
+    // SAHAI_HTTPS_REDIRECT=falseのとき、per-serviceルートはweb(:80)用と
+    // websecure(:443)用の2本に分かれる。tlsキーの有無がプロトコル可用性を左右し
+    // (空でもwebsecure専用になりweb:80から一切応答しなくなる。実機検証で判明)、
+    // 単一ルーターでは両プロトコルに応答できないため。2本に分けないと、
+    // httpでは見えるのにhttpsでは404という食い違いが起きる。
     #[tokio::test]
-    async fn write_route_does_not_restrict_entry_points_when_https_redirect_disabled() {
+    async fn write_route_serves_both_protocols_when_https_redirect_disabled() {
         let dir = temp_dir("https_redirect_off_route");
         let w = RouteWriter::new(
             dir.clone(),
@@ -882,19 +989,51 @@ mod tests {
         let content = tokio::fs::read_to_string(&path).await.unwrap();
         let parsed: serde_yaml::Value = serde_yaml::from_str(&content).unwrap();
 
-        assert!(
-            parsed["http"]["routers"]["myapp"]["entryPoints"].is_null(),
-            "https_redirect=falseのときentryPointsを指定してはいけない: {content}"
+        // web(:80)用は平文。tlsブロックを付けるとweb:80から応答しなくなる
+        assert_eq!(
+            parsed["http"]["routers"]["myapp"]["entryPoints"][0].as_str(),
+            Some("web")
         );
-        // tlsキーの有無がプロトコル可用性を左右する(空でもwebsecure専用になり
-        // web:80から一切応答しなくなる。実機検証で判明)。そのためtlsブロック自体を
-        // 完全に省略し、web(:80)専用の平文httpルーターにする
         assert!(
             parsed["http"]["routers"]["myapp"]["tls"].is_null(),
-            "https_redirect=falseのときtlsブロック自体を省略すべき(空でもwebsecure専用になりweb:80から応答しなくなるため): {content}"
+            "web(:80)用ルーターにtlsブロックを付けてはいけない: {content}"
+        );
+
+        // websecure(:443)用。certResolverは付けず、Traefik既定の自己署名証明書で応答する
+        // (ローカルドメインでの無駄なACME証明書取得を試みないため)
+        assert_eq!(
+            parsed["http"]["routers"]["myapp_tls"]["entryPoints"][0].as_str(),
+            Some("websecure")
+        );
+        assert!(
+            parsed["http"]["routers"]["myapp_tls"]["tls"].is_mapping(),
+            "websecure(:443)用ルーターにはtlsブロックが要る: {content}"
+        );
+        assert!(
+            parsed["http"]["routers"]["myapp_tls"]["tls"]["certResolver"].is_null(),
+            "https_redirect=falseのときcertResolverは省略すべき: {content}"
+        );
+        // 2本とも同じルール・同じ転送先を指す
+        assert_eq!(
+            parsed["http"]["routers"]["myapp_tls"]["rule"].as_str(),
+            parsed["http"]["routers"]["myapp"]["rule"].as_str()
+        );
+        assert_eq!(
+            parsed["http"]["routers"]["myapp_tls"]["service"].as_str(),
+            Some("myapp")
         );
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    /// websecure用ルーターの名前は、どのサービス名とも衝突してはいけない
+    /// (Traefikのファイルプロバイダは全ルートを1つの名前空間へマージするため)。
+    /// サービス名に`_`は使えないので、それを含めることで回避している。
+    #[tokio::test]
+    async fn tls_twin_router_name_cannot_collide_with_any_service_name() {
+        let name = tls_twin_router_name("myapp");
+        assert_eq!(name, "myapp_tls");
+        assert!(sahai_core::validation::validate_service_name(&name).is_err());
     }
 
     #[tokio::test]
@@ -968,18 +1107,46 @@ mod tests {
             parsed["http"]["middlewares"].is_null(),
             "https_redirect=falseのときmiddlewaresキー自体を出力すべきではない: {content}"
         );
-        assert!(
-            parsed["http"]["routers"]["sahai_app"]["entryPoints"].is_null(),
-            "https_redirect=falseのとき管理画面ルートもentryPointsを絞ってはいけない"
-        );
-        assert!(
-            parsed["http"]["routers"]["sahai_app"]["tls"].is_null(),
-            "https_redirect=falseのときtlsブロック自体を省略すべき(空でもwebsecure専用になりweb:80から応答しなくなるため)"
-        );
-        assert!(
-            parsed["http"]["routers"]["sahai_catchall"]["tls"].is_null(),
-            "https_redirect=falseのときcatchallもtlsブロックを省略すべき"
-        );
+        // 管理画面・catchallとも、web(:80)用の平文ルーターとwebsecure(:443)用の
+        // tls付きルーターの2本に分かれる。片方だけだと、そのプロトコルでしか
+        // 応答せず(tlsキーの有無がプロトコル可用性を左右する)、http・httpsで
+        // 挙動が食い違ってしまう
+        for name in ["sahai_app", "sahai_catchall"] {
+            assert_eq!(
+                parsed["http"]["routers"][name]["entryPoints"][0].as_str(),
+                Some("web"),
+                "{name}はweb(:80)専用の平文ルーターであるべき: {content}"
+            );
+            assert!(
+                parsed["http"]["routers"][name]["tls"].is_null(),
+                "{name}(web用)にtlsブロックを付けてはいけない: {content}"
+            );
+
+            let tls_name = format!("{name}_tls");
+            assert_eq!(
+                parsed["http"]["routers"][&tls_name]["entryPoints"][0].as_str(),
+                Some("websecure"),
+                "{tls_name}が無いとhttpsで404になる: {content}"
+            );
+            assert!(
+                parsed["http"]["routers"][&tls_name]["tls"].is_mapping(),
+                "{tls_name}にはtlsブロックが要る: {content}"
+            );
+            assert!(
+                parsed["http"]["routers"][&tls_name]["tls"]["certResolver"].is_null(),
+                "https_redirect=falseのときcertResolverは省略すべき: {content}"
+            );
+            assert_eq!(
+                parsed["http"]["routers"][&tls_name]["rule"].as_str(),
+                parsed["http"]["routers"][name]["rule"].as_str(),
+                "2本のルーターは同じルールを持つべき: {content}"
+            );
+            assert_eq!(
+                parsed["http"]["routers"][&tls_name]["priority"].as_i64(),
+                parsed["http"]["routers"][name]["priority"].as_i64(),
+                "2本のルーターは同じ優先度を持つべき: {content}"
+            );
+        }
         // web(:80)からも平文httpで直接アクセスできることを示すため、通常ルートは残る
         assert_eq!(
             parsed["http"]["routers"]["sahai_registry"]["rule"].as_str(),
