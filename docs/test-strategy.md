@@ -24,6 +24,7 @@ Web UI全体を通した操作フロー(E2E)は自動化しない。単独管理
 - composeサービス名バリデーション(12章と共通ロジック): Dockerリポジトリ名として有効な文字(`[a-z0-9._-]`)のみか。合成タグ`<service-name>-<composeサービス名>`が128文字以内か(境界値: 128文字ちょうど、129文字)
 - ボリュームパス正規化: `/var/lib/mysql` → `var-lib-mysql`。先頭`/`なし・末尾`/`あり・連続スラッシュ等の異常入力
 - ボリュームホストパス生成: `/var/sahai/services/<service_id>/<正規化パス>/` が `service_id` のみに依存し、`container_id`を含まないこと
+- **データルートの2表現**: `SAHAI_HOST_DATA_ROOT`未設定なら`SAHAI_DATA_ROOT`と同値になること(本番の既定)。両者が食い違う場合、bindマウント元は`host_data_root`から、`purge_volumes`の削除対象は`sahai_data_root`から組み立てられること
 - ホストポートバリデーション: `host_port`が1〜65535か(境界値: 0・1・65535)。差配自身が公開する予約ポート(80・443)でないか(`validation::validate_host_port`)。範囲そのものの制限は設けないため、20000番台以外の値が通ること
 - **compose_contentの diff ロジック(重要)**: 新旧`compose_content`のcomposeサービス名集合から「新規追加」「削除」「継続」を正しく分類できるか
   - 全サービス継続(変更なし)
@@ -135,6 +136,7 @@ Web UI全体を通した操作フロー(E2E)は自動化しない。単独管理
 ### Control planeのデプロイ
 
 - [ ] Control planeコンテナを`/var/sahai`をホストと同一パスでマウントして起動し、bollard/`docker compose`経由で作成したボリュームがホスト側の期待パスに実在することを確認(Docker-out-of-Dockerのパス整合性)
+- [ ] 開発構成(`SAHAI_HOST_DATA_ROOT`あり)で、ボリューム付きサービスを起動→`./data/services/<id>/<正規化パス>`がホストに出ること、ホストで書いたファイルがコンテナから読めること、`purge_volumes=true`での削除で実際に消えることを確認(2つのデータルート表現が同じ場所を指していることの検証)
 
 ## 5. 実行方法
 

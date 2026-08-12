@@ -105,6 +105,7 @@ pub mod test_support {
             // DNS設定(.sahai.env書き込み)のTDDで実際にファイルを置けるよう、
             // テスト専用の一時ディレクトリ配下を指す(service::settings::dns系テスト参照)
             env_file_path: dir.join(".sahai.env"),
+            host_data_root: dir.clone(),
             sahai_data_root: dir,
         };
         let settings = test_settings();
@@ -158,6 +159,7 @@ pub mod test_support {
             // DNS設定(.sahai.env書き込み)のTDDで実際にファイルを置けるよう、
             // テスト専用の一時ディレクトリ配下を指す(service::settings::dns系テスト参照)
             env_file_path: dir.join(".sahai.env"),
+            host_data_root: dir.clone(),
             sahai_data_root: dir,
         };
         let settings: SharedSettings = Arc::new(RwLock::new(Settings {

@@ -37,7 +37,9 @@ $ComposeFile = Join-Path $ScriptDir 'compose.yaml'
 $DataRoot = '/var/sahai'
 $SetupEnv = Join-Path $env:USERPROFILE '.config\sahai\setup.env'
 $CliConfigPath = Join-Path $env:USERPROFILE '.config\sahai\config.toml'
-$HtpasswdFile = Join-Path $ScriptDir 'registry\auth\htpasswd'
+# v0.1系までリポジトリ直下に置いていたhtpasswd。現在は$DataRoot/registry-auth配下に
+# あり上のDataRoot削除で一緒に消えるが、既存環境に残っていることがあるので拾う
+$LegacyHtpasswdFile = Join-Path $ScriptDir 'registry\auth\htpasswd'
 $LegacyEnvFile = Join-Path $ScriptDir '.env'
 
 function Write-Log { param([string]$Message) Write-Host $Message }
@@ -88,8 +90,8 @@ try { docker info | Out-Null } catch { Die "Dockerデーモンに接続できま
 Write-Log "以下を削除します:"
 Write-Log "  - 土台のコンテナ(traefik / sahai-server / registry)"
 Write-Log "  - sahaiが起動した全サービスのコンテナ(svc-*)"
-Write-Log "  - $DataRoot 配下(DB・レジストリのイメージ・サービスのボリューム)"
-Write-Log "  - $HtpasswdFile"
+Write-Log "  - $DataRoot 配下(DB・レジストリのイメージと認証情報・サービスのボリューム)"
+if (Test-Path $LegacyHtpasswdFile) { Write-Log "  - $LegacyHtpasswdFile(旧バージョンの置き場)" }
 Write-Log "  - $SetupEnv"
 if ($CliConfig) { Write-Log "  - $CliConfigPath" }
 if ($Acme) { Write-Log "  - $DataRoot/traefik/acme(取得済みのTLS証明書)" }
@@ -135,7 +137,7 @@ if ($LASTEXITCODE -eq 0) {
 }
 
 # 4. リポジトリ内・ホーム配下のファイル
-foreach ($f in @($HtpasswdFile, $SetupEnv)) {
+foreach ($f in @($LegacyHtpasswdFile, $SetupEnv)) {
     if (Test-Path $f) { Remove-Item -Force $f }
 }
 if ($CliConfig -and (Test-Path $CliConfigPath)) { Remove-Item -Force $CliConfigPath }

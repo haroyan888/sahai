@@ -44,7 +44,7 @@ pub fn generate_override_yaml(
     service: &ServiceDetail,
     registry_url: &str,
     build_service_names: &[String],
-    sahai_data_root: &Path,
+    host_data_root: &Path,
     env_file_path: &Path,
 ) -> Result<String, DockerError> {
     let mut services = BTreeMap::new();
@@ -82,7 +82,7 @@ pub fn generate_override_yaml(
             .iter()
             .map(|v| {
                 let host_path = sahai_core::naming::volume_host_path(
-                    sahai_data_root,
+                    host_data_root,
                     service.service.id,
                     &v.container_path,
                 );

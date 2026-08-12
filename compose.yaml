@@ -130,7 +130,9 @@ services:
     restart: unless-stopped
     volumes:
       - /var/sahai/registry:/var/lib/registry
-      - ./registry/auth:/auth:ro
+      # 生成されるデータはリポジトリ配下に置かずデータルートへ集約する
+      # (container-design.md 3章)。setupスクリプトがコンテナ経由で書き出す
+      - /var/sahai/registry-auth:/auth:ro
     environment:
       - REGISTRY_AUTH=htpasswd
       - REGISTRY_AUTH_HTPASSWD_REALM=Registry Realm

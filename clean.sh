@@ -23,7 +23,9 @@ COMPOSE_FILE="$SCRIPT_DIR/compose.yaml"
 DATA_ROOT="/var/sahai"
 SETUP_ENV="$HOME/.config/sahai/setup.env"
 CLI_CONFIG="$HOME/.config/sahai/config.toml"
-HTPASSWD_FILE="$SCRIPT_DIR/registry/auth/htpasswd"
+# v0.1系までリポジトリ直下に置いていたhtpasswd。現在は${DATA_ROOT}/registry-auth配下に
+# あり上のDATA_ROOT削除で一緒に消えるが、既存環境に残っていることがあるので拾う
+LEGACY_HTPASSWD_FILE="$SCRIPT_DIR/registry/auth/htpasswd"
 LEGACY_ENV_FILE="$SCRIPT_DIR/.env"
 
 log() { printf '%s\n' "$*"; }
@@ -49,8 +51,8 @@ docker info >/dev/null 2>&1 || die "Dockerデーモンに接続できません�
 log "以下を削除します:"
 log "  - 土台のコンテナ(traefik / sahai-server / registry)"
 log "  - sahaiが起動した全サービスのコンテナ(svc-*)"
-log "  - ${DATA_ROOT} 配下(DB・レジストリのイメージ・サービスのボリューム)"
-log "  - ${HTPASSWD_FILE}"
+log "  - ${DATA_ROOT} 配下(DB・レジストリのイメージと認証情報・サービスのボリューム)"
+[ -f "$LEGACY_HTPASSWD_FILE" ] && log "  - ${LEGACY_HTPASSWD_FILE}(旧バージョンの置き場)"
 log "  - ${SETUP_ENV}"
 [ "$remove_cli_config" = 1 ] && log "  - ${CLI_CONFIG}"
 [ "$remove_acme" = 1 ] && log "  - ${DATA_ROOT}/traefik/acme(取得済みのTLS証明書)"
@@ -98,7 +100,7 @@ if docker run --rm -v "$DATA_ROOT:/target" alpine test -d /target >/dev/null 2>&
 fi
 
 # 4. リポジトリ内・ホーム配下のファイル
-rm -f "$HTPASSWD_FILE" "$SETUP_ENV"
+rm -f "$LEGACY_HTPASSWD_FILE" "$SETUP_ENV"
 [ "$remove_cli_config" = 1 ] && rm -f "$CLI_CONFIG"
 if [ -f "$LEGACY_ENV_FILE" ]; then
   warn "注意: 旧バージョンが作った ${LEGACY_ENV_FILE} が残っています。秘匿値を含むため内容を確認のうえ削除してください。"

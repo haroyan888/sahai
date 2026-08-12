@@ -22,11 +22,53 @@ COMPOSE_FILE="$SCRIPT_DIR/compose.yaml"
 ENV_FILE="$HOME/.config/sahai/setup.env"
 # 旧バージョンがリポジトリ直下に作っていた同等ファイル。トークンの引き継ぎのみに使う
 LEGACY_ENV_FILE="$SCRIPT_DIR/.env"
-HTPASSWD_FILE="$SCRIPT_DIR/registry/auth/htpasswd"
+DATA_ROOT="/var/sahai"
+# 生成物はすべてデータルート配下に集約する(container-design.md 3章)。
+# ここはdockerdが作るroot所有のディレクトリなので、読み書きはコンテナ経由で行い
+# setup.sh自体にsudoを要求しない
+HTPASSWD_DIR="$DATA_ROOT/registry-auth"
+# v0.1系までリポジトリ直下に置いていた同等ファイル。移行のためだけに参照する
+LEGACY_HTPASSWD_FILE="$SCRIPT_DIR/registry/auth/htpasswd"
 
 log() { printf '%s\n' "$*"; }
 warn() { printf '%s\n' "$*" >&2; }
 die() { warn "エラー: $*"; exit 1; }
+
+# htpasswdの置き場($HTPASSWD_DIR)はdockerdが作るroot所有のディレクトリのため、
+# ホスト側のリダイレクトでは書き込めない。コンテナ内から読み書きしてsudoを不要にする
+# (clean.shが$DATA_ROOTの削除で使っているのと同じ手)
+htpasswd_exists() {
+  docker run --rm -v "$HTPASSWD_DIR:/auth" httpd:2.4-alpine test -f /auth/htpasswd >/dev/null 2>&1
+}
+
+# 引数: <ユーザー名>。パスワードは標準入力から渡す
+# (引数に置くとプロセス一覧やdocker inspectのCmdに平文で残るため)
+write_htpasswd() {
+  docker run --rm -i -v "$HTPASSWD_DIR:/auth" httpd:2.4-alpine \
+    sh -c 'htpasswd -Bni "$1" > /auth/htpasswd' sh "$1"
+}
+
+# 空のhtpasswdを置く。ファイルが存在しないままbind mountするとDockerが
+# ディレクトリを自動作成してしまい、registryコンテナの起動自体が壊れる
+write_empty_htpasswd() {
+  docker run --rm -v "$HTPASSWD_DIR:/auth" httpd:2.4-alpine sh -c ': > /auth/htpasswd'
+}
+
+# リポジトリ直下(旧)からデータルート配下(新)へhtpasswdを引き継ぐ。
+# これをしないと、既存環境の更新時にregistryが認証ファイルを見失い
+# 「htpasswd is missing, provisioning with default user」で勝手にランダムな
+# 資格情報を作ってしまい、既存のdocker loginが通らなくなる
+migrate_legacy_htpasswd() {
+  [ -f "$LEGACY_HTPASSWD_FILE" ] || return 0
+  htpasswd_exists && return 0
+  if docker run --rm -i -v "$HTPASSWD_DIR:/auth" httpd:2.4-alpine \
+       sh -c 'cat > /auth/htpasswd' < "$LEGACY_HTPASSWD_FILE"; then
+    log "${LEGACY_HTPASSWD_FILE} を ${HTPASSWD_DIR}/htpasswd へ移行しました。"
+    log "移行元のファイルは不要です。内容を確認のうえ削除してください。"
+  else
+    warn "htpasswdの移行に失敗しました。レジストリの認証が効かなくなる可能性があります。"
+  fi
+}
 
 dc() { docker compose -f "$COMPOSE_FILE" "$@"; }
 
@@ -126,8 +168,10 @@ step0_check_prerequisites() {
 #   reuse-existing - 既存のhtpasswdを再利用した(平文パスワードが分からないためDB登録はしない)
 #   skip           - SAHAI_SETUP_SKIP_REGISTRY_SETTINGS=1で丸ごとスキップした
 step1_configure_registry() {
-  if [ -f "$HTPASSWD_FILE" ]; then
-    log "registry/auth/htpasswd は既存のものを再利用します。"
+  migrate_legacy_htpasswd
+
+  if htpasswd_exists; then
+    log "${HTPASSWD_DIR}/htpasswd は既存のものを再利用します。"
     log "変更したい場合はWeb UIの「レジストリ設定」から行えます。"
     SAHAI_REGISTRY_CREDENTIALS_MODE="reuse-existing"
     return 0
@@ -138,8 +182,6 @@ step1_configure_registry() {
     SAHAI_REGISTRY_CREDENTIALS_MODE="skip"
     return 0
   fi
-
-  mkdir -p "$SCRIPT_DIR/registry/auth"
 
   local mode
   if [ -n "${SAHAI_SETUP_REGISTRY_URL:-}${SAHAI_SETUP_REGISTRY_AUTH_USER:-}${SAHAI_SETUP_REGISTRY_AUTH_PASSWORD:-}" ]; then
@@ -203,14 +245,12 @@ step1_configure_registry() {
     fi
 
     if [ "$reg_url" = "$default_url" ]; then
-      printf '%s' "$reg_pass" | docker run --rm -i httpd:2.4-alpine htpasswd -Bni "$reg_user" > "$HTPASSWD_FILE"
-      log "registry/auth/htpasswd を作成しました(ユーザー名: ${reg_user})。"
+      printf '%s' "$reg_pass" | write_htpasswd "$reg_user"
+      log "${HTPASSWD_DIR}/htpasswd を作成しました(ユーザー名: ${reg_user})。"
     else
-      # 空ファイルとして作成する(存在しないファイルをbind mountするとDockerが
-      # ディレクトリを自動作成してしまい、同梱registryコンテナの起動自体が壊れるため。
       # 中身が空でも有効なhtpasswdファイルとして扱われ、単に誰も認証できなくなるだけ
-      # で済む。この同梱レジストリは使わない前提なので問題ない)
-      : > "$HTPASSWD_FILE"
+      # で済む。この同梱レジストリは使わない前提なので問題ない
+      write_empty_htpasswd
       log "外部レジストリを指定したため、同梱registryの認証ファイルは作成しません。"
     fi
   else
@@ -219,8 +259,8 @@ step1_configure_registry() {
     reg_url=""
     reg_user="${SAHAI_SETUP_REGISTRY_AUTH_USER:-sahai}"
     reg_pass="${SAHAI_SETUP_REGISTRY_AUTH_PASSWORD:-$(generate_random_secret)}"
-    printf '%s' "$reg_pass" | docker run --rm -i httpd:2.4-alpine htpasswd -Bni "$reg_user" > "$HTPASSWD_FILE"
-    log "registry/auth/htpasswd を作成しました(ユーザー名: ${reg_user}、パスワードは自動生成)。"
+    printf '%s' "$reg_pass" | write_htpasswd "$reg_user"
+    log "${HTPASSWD_DIR}/htpasswd を作成しました(ユーザー名: ${reg_user}、パスワードは自動生成)。"
   fi
 
   SAHAI_REGISTRY_CREDENTIALS_MODE="provisioned"

@@ -26,11 +26,57 @@ $EnvFile = Join-Path $env:USERPROFILE '.config\sahai\setup.env'
 # 旧バージョンがリポジトリ直下に作っていた同等ファイル。トークンの引き継ぎのみに使う
 $LegacyEnvFile = Join-Path $ScriptDir '.env'
 $script:LegacyEnvFileMigrated = $false
-$HtpasswdFile = Join-Path $ScriptDir 'registry\auth\htpasswd'
+$DataRoot = '/var/sahai'
+# 生成物はすべてデータルート配下に集約する(container-design.md 3章)。
+# ここはdockerdが作るroot所有のディレクトリで、Windowsホストからは直接触れない
+# (Docker DesktopではVM内)。読み書きはコンテナ経由で行う
+$HtpasswdDir = "$DataRoot/registry-auth"
+# v0.1系までリポジトリ直下に置いていた同等ファイル。移行のためだけに参照する
+$LegacyHtpasswdFile = Join-Path $ScriptDir 'registry\auth\htpasswd'
 
 function Write-Log { param([string]$Message) Write-Host $Message }
 function Write-Warn2 { param([string]$Message) Write-Warning $Message }
 function Die { param([string]$Message) Write-Error $Message; exit 1 }
+
+# htpasswdの置き場($HtpasswdDir)はroot所有かつVM内にあるため、ホスト側からは
+# 読み書きできない。コンテナ内から扱う(clean.ps1がデータルートの削除で使う手と同じ)
+function Test-Htpasswd {
+    docker run --rm -v "${HtpasswdDir}:/auth" httpd:2.4-alpine test -f /auth/htpasswd 2>$null | Out-Null
+    return ($LASTEXITCODE -eq 0)
+}
+
+# パスワードは標準入力から渡す
+# (引数に置くとプロセス一覧やdocker inspectのCmdに平文で残るため)
+function Write-Htpasswd {
+    param([string]$User, [string]$Password)
+    $Password | docker run --rm -i -v "${HtpasswdDir}:/auth" httpd:2.4-alpine `
+        sh -c 'htpasswd -Bni "$1" > /auth/htpasswd' sh $User
+    if ($LASTEXITCODE -ne 0) { Die "htpasswdの作成に失敗しました。" }
+}
+
+# 空のhtpasswdを置く。ファイルが存在しないままbind mountするとDockerが
+# ディレクトリを自動作成してしまい、registryコンテナの起動自体が壊れる
+function Write-EmptyHtpasswd {
+    docker run --rm -v "${HtpasswdDir}:/auth" httpd:2.4-alpine sh -c ': > /auth/htpasswd'
+    if ($LASTEXITCODE -ne 0) { Die "htpasswdの作成に失敗しました。" }
+}
+
+# リポジトリ直下(旧)からデータルート配下(新)へhtpasswdを引き継ぐ。
+# これをしないと、既存環境の更新時にregistryが認証ファイルを見失い
+# 「htpasswd is missing, provisioning with default user」で勝手にランダムな
+# 資格情報を作ってしまい、既存のdocker loginが通らなくなる
+function Move-LegacyHtpasswd {
+    if (-not (Test-Path $LegacyHtpasswdFile)) { return }
+    if (Test-Htpasswd) { return }
+    Get-Content -Raw -Path $LegacyHtpasswdFile |
+        docker run --rm -i -v "${HtpasswdDir}:/auth" httpd:2.4-alpine sh -c 'cat > /auth/htpasswd'
+    if ($LASTEXITCODE -eq 0) {
+        Write-Log "$LegacyHtpasswdFile を $HtpasswdDir/htpasswd へ移行しました。"
+        Write-Log "移行元のファイルは不要です。内容を確認のうえ削除してください。"
+    } else {
+        Write-Warn2 "htpasswdの移行に失敗しました。レジストリの認証が効かなくなる可能性があります。"
+    }
+}
 
 # PowerShellの実行ポリシーが厳しいと `.\setup.ps1` を直接実行できない。
 # このスクリプトが動いている時点で今回の実行自体は許可されているが
@@ -173,8 +219,10 @@ function Step0-CheckPrerequisites {
 #   reuse-existing - 既存のhtpasswdを再利用した(平文パスワードが分からないためDB登録はしない)
 #   skip           - SAHAI_SETUP_SKIP_REGISTRY_SETTINGS=1で丸ごとスキップした
 function Step1-ConfigureRegistry {
-    if (Test-Path $HtpasswdFile) {
-        Write-Log "registry/auth/htpasswd は既存のものを再利用します。"
+    Move-LegacyHtpasswd
+
+    if (Test-Htpasswd) {
+        Write-Log "$HtpasswdDir/htpasswd は既存のものを再利用します。"
         Write-Log "変更したい場合はWeb UIの「レジストリ設定」から行えます。"
         return @{ Mode = 'reuse-existing' }
     }
@@ -184,7 +232,7 @@ function Step1-ConfigureRegistry {
         return @{ Mode = 'skip' }
     }
 
-    New-Item -ItemType Directory -Force -Path (Split-Path $HtpasswdFile) | Out-Null
+    # $HtpasswdDir はbindマウント時にdockerdが自動作成するため、ここでは作らない
 
     $mode = $null
     if ($env:SAHAI_SETUP_REGISTRY_URL -or $env:SAHAI_SETUP_REGISTRY_AUTH_USER -or $env:SAHAI_SETUP_REGISTRY_AUTH_PASSWORD) {
@@ -251,15 +299,12 @@ function Step1-ConfigureRegistry {
         }
 
         if ($regUrl -eq $defaultUrl) {
-            $regPass | docker run --rm -i httpd:2.4-alpine htpasswd -Bni $regUser | Set-Content -Path $HtpasswdFile -Encoding ascii
-            if ($LASTEXITCODE -ne 0) { Die "htpasswdの作成に失敗しました。" }
-            Write-Log "registry/auth/htpasswd を作成しました(ユーザー名: $regUser)。"
+            Write-Htpasswd -User $regUser -Password $regPass
+            Write-Log "$HtpasswdDir/htpasswd を作成しました(ユーザー名: $regUser)。"
         } else {
-            # 空ファイルとして作成する(存在しないファイルをbind mountするとDockerが
-            # ディレクトリを自動作成してしまい、同梱registryコンテナの起動自体が壊れるため。
             # 中身が空でも有効なhtpasswdファイルとして扱われ、単に誰も認証できなくなるだけ
-            # で済む。この同梱レジストリは使わない前提なので問題ない)
-            New-Item -ItemType File -Force -Path $HtpasswdFile | Out-Null
+            # で済む。この同梱レジストリは使わない前提なので問題ない
+            Write-EmptyHtpasswd
             Write-Log "レジストリURLが既定値($defaultUrl)と異なるため、同梱registryコンテナのhtpasswdは変更しません(未使用として空ファイルを作成)。"
         }
     } else {
@@ -268,9 +313,8 @@ function Step1-ConfigureRegistry {
         $regUrl = ''
         $regUser = if ($env:SAHAI_SETUP_REGISTRY_AUTH_USER) { $env:SAHAI_SETUP_REGISTRY_AUTH_USER } else { 'sahai' }
         $regPass = if ($env:SAHAI_SETUP_REGISTRY_AUTH_PASSWORD) { $env:SAHAI_SETUP_REGISTRY_AUTH_PASSWORD } else { New-RandomSecret }
-        $regPass | docker run --rm -i httpd:2.4-alpine htpasswd -Bni $regUser | Set-Content -Path $HtpasswdFile -Encoding ascii
-        if ($LASTEXITCODE -ne 0) { Die "htpasswdの作成に失敗しました。" }
-        Write-Log "registry/auth/htpasswd を作成しました(ユーザー名: $regUser、パスワードは自動生成)。"
+        Write-Htpasswd -User $regUser -Password $regPass
+        Write-Log "$HtpasswdDir/htpasswd を作成しました(ユーザー名: $regUser、パスワードは自動生成)。"
     }
 
     return @{ Mode = 'provisioned'; Url = $regUrl; User = $regUser; Password = $regPass }

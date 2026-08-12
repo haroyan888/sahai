@@ -14,7 +14,12 @@ use super::{override_gen, ContainerLifecycle, DockerError};
 
 pub struct ComposeRuntime {
     settings: SharedSettings,
+    /// base.yml/override.yml/.envの書き出し先。自身のファイルI/Oなのでコンテナ内のパス
     sahai_data_root: PathBuf,
+    /// override.ymlの`volumes:`に埋めるbindマウント元。dockerdがホスト側パスとして
+    /// 解決するため上とは別物(config.rs参照)。生成する1つのYAMLの中に、
+    /// クライアント側で読まれる`env_file:`とホスト側で解決される`volumes:`が同居する
+    host_data_root: PathBuf,
 }
 
 /// `docker compose down`が使えないときの後始末。コンテナ名は`svc-{id}`で決まるため、
@@ -49,10 +54,15 @@ async fn force_remove_containers(
 }
 
 impl ComposeRuntime {
-    pub fn new(settings: SharedSettings, sahai_data_root: PathBuf) -> Self {
+    pub fn new(
+        settings: SharedSettings,
+        sahai_data_root: PathBuf,
+        host_data_root: PathBuf,
+    ) -> Self {
         ComposeRuntime {
             settings,
             sahai_data_root,
+            host_data_root,
         }
     }
 
@@ -107,7 +117,7 @@ impl ComposeRuntime {
             service,
             &registry_url,
             &build_service_names,
-            &self.sahai_data_root,
+            &self.host_data_root,
             &env_path,
         )?;
         tokio::fs::write(&override_path, override_yaml)
@@ -303,7 +313,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let runtime = ComposeRuntime::new(test_settings(), data_root.clone());
+        let runtime = ComposeRuntime::new(test_settings(), data_root.clone(), data_root.clone());
         let service = compose_service_detail(9101, 9102, Some(21103));
 
         let stop_result = runtime.stop(&service).await;
@@ -325,7 +335,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let runtime = ComposeRuntime::new(test_settings(), data_root.clone());
+        let runtime = ComposeRuntime::new(test_settings(), data_root.clone(), data_root.clone());
         let service = compose_service_detail(9200, 9201, None);
 
         runtime.start(&service).await.unwrap();
@@ -382,7 +392,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let runtime = ComposeRuntime::new(test_settings(), data_root.clone());
+        let runtime = ComposeRuntime::new(test_settings(), data_root.clone(), data_root.clone());
         let service = compose_service_detail(9001, 9002, Some(21102));
 
         let up_result = runtime.start(&service).await;

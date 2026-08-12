@@ -48,12 +48,20 @@ pub struct DockerClients {
 }
 
 impl DockerClients {
+    /// `sahai_data_root`はsahai-server自身のファイルI/O用、`host_data_root`は
+    /// dockerdへbindマウント元として渡すためのもの。開発時のみ食い違う(config.rs参照)。
     pub fn connect(
         settings: SharedSettings,
         sahai_data_root: std::path::PathBuf,
+        host_data_root: std::path::PathBuf,
     ) -> Result<Self, DockerError> {
         let docker = bollard::Docker::connect_with_local_defaults()?;
-        Ok(Self::from_docker(docker, settings, sahai_data_root))
+        Ok(Self::from_docker(
+            docker,
+            settings,
+            sahai_data_root,
+            host_data_root,
+        ))
     }
 
     /// テスト専用: 実Dockerデーモンに一切到達できないクライアントで構築する。
@@ -68,6 +76,7 @@ impl DockerClients {
         Self::from_docker(
             unreachable_docker_client_for_test(),
             settings,
+            sahai_data_root.clone(),
             sahai_data_root,
         )
     }
@@ -76,15 +85,20 @@ impl DockerClients {
         docker: bollard::Docker,
         settings: SharedSettings,
         sahai_data_root: std::path::PathBuf,
+        host_data_root: std::path::PathBuf,
     ) -> Self {
         DockerClients {
             docker: docker.clone(),
             image_runtime: image_runtime::ImageRuntime::new(
                 docker.clone(),
-                sahai_data_root.clone(),
+                host_data_root.clone(),
                 settings.clone(),
             ),
-            compose_runtime: compose_runtime::ComposeRuntime::new(settings, sahai_data_root),
+            compose_runtime: compose_runtime::ComposeRuntime::new(
+                settings,
+                sahai_data_root,
+                host_data_root,
+            ),
             inspector: Inspector::new(docker),
         }
     }
