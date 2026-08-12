@@ -117,6 +117,9 @@ services:
       # 設定しておくこと(この環境変数はコンテナ起動時に一度だけ読まれるため、
       # 初期設定画面だけで変更してもTraefik側のルールには反映されない)
       - SAHAI_DOMAIN=${SAHAI_DOMAIN:-localhost}
+      # dev-routes.ymlが平文http用ルーターを書き出すかの判定に使う。trueのときは
+      # sahai-server側のhttps→リダイレクトルーターに任せる(dev-routes.yml参照)
+      - SAHAI_HTTPS_REDIRECT=${SAHAI_HTTPS_REDIRECT:-false}
     ports:
       # 公開ポートを持つのはtraefikのみ(このcomposeファイル全体でここだけ)
       - "${SAHAI_TRAEFIK_HTTP_PORT:-80}:80"

@@ -14,7 +14,7 @@
 # admin routeへフォールバックしてしまい、dev用sahai-serverはビルド済み静的
 # ファイルを持たないため古い/空のレスポンスになる問題があったための変更。
 #
-# **注意**: この環境変数はTraefikコンテナ起動時に一度だけ読まれる。Web UIの
+# **注意**: これらの環境変数はTraefikコンテナ起動時に一度だけ読まれる。Web UIの
 # 初期設定画面(またはSettings画面)で入力するドメインと、`dev.env`の
 # SAHAI_DOMAINは必ず同じ値にすること(片方だけ変えても一致しなくなり、
 # このファイルのルールがマッチしなくなる)。
@@ -23,35 +23,46 @@
 # 高くしてある。Host()がsahai.<domain>限定なので、他の登録済みサービス
 # (myapp.<domain>等、動的に生成されるper-serviceルート)とは競合しない。
 #
-# **tls/entryPointsについて(2026-07-30追加)**: 実ドメイン+SAHAI_HTTPS_REDIRECT=trueで
-# 検証したところ、tlsブロックを持たないルーターはwebsecure(:443)では一切応答せず、
-# 代わりに優先度の低いsahai-server自身のadmin route(tls付き)にフォールバックしてしまう
-# 問題が発覚した(route_writer.rsのコメントにある「tlsキーの有無がプロトコル可用性を
-# 直接左右する」という実機検証結果と同じ制約)。そのためtls: {}とentryPoints:
-# [web, websecure]を明示した。ただしこれによりSAHAI_HTTPS_REDIRECT=falseでの
-# 従来のhttp直接アクセス(localhost開発フロー)はこのルーターではweb(:80)から
-# 応答しなくなる(https-redirectミドルウェア相当が無いため301にもならず、
-# tls無しのアクセスはそもそも到達できない)。現状はSAHAI_HTTPS_REDIRECT=true固定運用を
-# 前提としている。false運用も両立させたい場合は、route_writer.rsと同様にweb専用
-# ルーター(tlsなし)とwebsecure専用ルーター(tls付き)を分離する対応が別途必要
+# **web(:80)用とwebsecure(:443)用でルーターを2本に分けている**理由:
+# `tls`キーの有無がプロトコル可用性を直接左右する(route_writer.rsのコメントにある
+# 実機検証結果と同じ制約)。`tls`を持つルーターはwebsecure専用になりweb(:80)では
+# 一切応答せず、`tls`を持たないルーターはweb専用になりwebsecure(:443)では応答しない。
+# 単一ルーターで両プロトコルに応答させることはできない。
+#
+# 平文http用(`-web`側)はSAHAI_HTTPS_REDIRECT=trueのときだけ書き出さない。
+# trueのときはsahai-serverが書き出す`sahai_https_redirect`ルーターがweb(:80)宛てを
+# httpsへ301するので、ここでweb(:80)を横取りするとリダイレクトが効かなくなるため
+# (このルーターのpriority 200が`sahai_https_redirect`のpriority 1に勝ってしまう)。
 http:
   routers:
-    dev-web-ui:
+    dev-web-ui-tls:
+      rule: 'Host(`sahai.{{ env "SAHAI_DOMAIN" }}`) && !PathPrefix(`/api`)'
+      service: dev-web-ui
+      priority: 200
+      entryPoints:
+      - websecure
+      tls: {}
+    dev-api-tls:
+      rule: 'Host(`sahai.{{ env "SAHAI_DOMAIN" }}`) && PathPrefix(`/api`)'
+      service: dev-api
+      priority: 200
+      entryPoints:
+      - websecure
+      tls: {}
+{{ if ne (env "SAHAI_HTTPS_REDIRECT") "true" }}
+    dev-web-ui-web:
       rule: 'Host(`sahai.{{ env "SAHAI_DOMAIN" }}`) && !PathPrefix(`/api`)'
       service: dev-web-ui
       priority: 200
       entryPoints:
       - web
-      - websecure
-      tls: {}
-    dev-api:
+    dev-api-web:
       rule: 'Host(`sahai.{{ env "SAHAI_DOMAIN" }}`) && PathPrefix(`/api`)'
       service: dev-api
       priority: 200
       entryPoints:
       - web
-      - websecure
-      tls: {}
+{{ end }}
   services:
     dev-web-ui:
       loadBalancer:

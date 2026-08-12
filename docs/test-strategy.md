@@ -32,12 +32,14 @@ Web UI全体を通した操作フロー(E2E)は自動化しない。単独管理
   - 追加と削除が同時に起きるケース(実質的なリネーム相当。「削除+新規追加」として扱われることを確認)
   - 空のcompose(サービスなし)からの追加、全削除
 - **非HTTPサービス判定**: `is_http`ポートを持つ`ServiceContainer`が0件のとき、Not HTTP Serviceページへのルーティングを選ぶロジック
+- **Not Serviceページへの振り分け判定**: SPAフォールバックがHostヘッダーから`/not-service`へリダイレクトすべきかを決める純粋関数。管理画面ホスト(`sahai.<domain>`)は対象外、それ以外のサブドメインは対象、ベースドメイン外のホスト名(`localhost`・生IP)と初期設定前(ベースドメイン空)は対象外、`/not-service`自身はリダイレクトしない(無限ループ防止)、Hostヘッダーのポート部分(`:8080`)を無視すること
 - **`is_http`最大1件の検証ロジック**: サービス配下の全`ServiceContainer`の全`ServicePort`を横断して`is_http=1`が2件以上ある場合にエラーとするバリデーション関数
 
 ### 7章: 起動・停止・削除
 
 - **override生成ロジック**: `compose_content`をパースし、`build:`を持つサービスにのみ`image:`を注入、全サービスに`container_name: svc-{id}`・ポート・ボリューム・`env_file`を注入する処理。生成後のYAML構造を期待値と比較
 - **Traefikルート生成ロジック**: `is_http`ポートの有無によって、実サービスへのルート/Not HTTP Serviceページへのルートのどちらを生成するかの分岐
+- **http/https両対応のルーター生成**: `https_redirect=false`のとき、1つの論理ルートにつきweb用(`tls`なし)とwebsecure用(`tls: {}`・`certResolver`なし)の2本が、同じルール・同じ優先度・同じ転送先で書き出されること。`true`のときはwebsecure用1本+リダイレクトルーターであること。websecure用の名前がサービス名と衝突しないこと
 - コンテナ名・プロジェクト名の組み立て: `svc-{ServiceContainer.id}` / `svc-{Service.id}` が正しいIDから生成されること(サービス名の値に依存しないこと)
 
 ### 8章: ヘルスチェック
@@ -92,9 +94,13 @@ Web UI全体を通した操作フロー(E2E)は自動化しない。単独管理
 - [ ] compose型サービス(例: app + mysql構成)を登録・起動し、`docker compose ls`で`svc-{service_id}`というプロジェクト名になっていることを確認
 - [ ] compose型サービスの各コンテナが`svc-{container_id}`という名前で起動していることを確認
 
-### 非HTTPサービス
+### 非HTTPサービス・未登録サブドメイン
 
 - [ ] `is_http`ポートを持たないサービス(例: DB単体)を登録・起動し、サブドメインへアクセスするとNot HTTP Serviceページが表示され、登録済みポート一覧が表示されることを確認
+- [ ] 未登録のサブドメイン(例: `nosuch.<domain>`)へアクセスし、**ログイン画面ではなく**「サービスが見つかりません」が表示されることを確認(`/not-service`へリダイレクトされること・ページのJS/CSSが正しく読み込まれ白画面にならないこと)
+- [ ] 上記の状態で`sahai.<domain>`へアクセスし、管理画面(ログイン画面)が従来どおり表示されることを確認
+- [ ] `SAHAI_HTTPS_REDIRECT=false`で、上記2つを**`http://`と`https://`の両方**で行い同じ画面になることを確認(httpsは自己署名証明書の警告を許容する)。`https://`が404になる場合はwebsecure用ルーターが書き出されていない
+- [ ] `SAHAI_HTTPS_REDIRECT=true`で、`http://`が443へ301リダイレクトされることを確認
 
 ### ヘルスチェック
 

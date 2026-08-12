@@ -10,10 +10,9 @@
 
 ### CORS
 
-`/api/*`配下の全ルートにCORSを許可(`Access-Control-Allow-Origin: *`相当)している。本番ではWeb UIをsahai-server自身が同一オリジンで配信するためCORSは不要だが、以下の2つの理由で許可している。
+`/api/*`配下の全ルートにCORSを許可(`Access-Control-Allow-Origin: *`相当)している。本番ではWeb UIをsahai-server自身が同一オリジンで配信するためCORSは不要だが、開発時はVite開発サーバー(別オリジン)から直接APIを叩くため、オリジン制限をかけると開発が成立しない。
 
-- 開発時はVite開発サーバー(別オリジン)から直接APIを叩くため、オリジン制限をかけると開発が成立しない
-- [NotServicePage](../web/src/pages/NotServicePage.tsx)は任意のサブドメインから表示されるため、`sahai.<ベースドメイン>`の`/api/not-service`へ**別オリジンで**問い合わせる([container-design.md](./container-design.md) 1.5章参照)
+[NotServicePage](../web/src/pages/NotServicePage.tsx)は`sahai.<ベースドメイン>`以外の任意のサブドメインから表示されるが、これは別オリジンにはならない。catch-allルート・非HTTPサービス用ルートはいずれもパスを問わずsahai-serverへ転送するため、表示中のサブドメインのまま相対パスで`/api/not-service`を叩けば同じsahai-serverに届く([container-design.md](./container-design.md) 1.5章参照)。
 
 認証はCookieの自動送信ではなくJSが明示的に付与するBearerトークンで行うため、オリジン制限はそもそもセキュリティ境界として機能していない(ブラウザ以外のクライアントはCORSに拘束されない)。よってCORSを緩めること自体による追加のリスクは無い(要件定義書4章「セキュリティモデル」)。
 
@@ -471,6 +470,8 @@ data: {"message":"コンテナが見つかりません"}
 要件定義書6章「非HTTPサービス・未登録サブドメインのルーティング」に対応。`/api/services/*`とは異なり**認証不要**(Web UIの未ログイン状態からも呼ぶため)。
 
 **クエリパラメータ**: `host`(必須。例: `mysql.example.com`。`window.location.hostname`をそのまま渡す想定)
+
+このAPIを叩くNot Serviceページ自体へは、sahai-serverのSPAフォールバックが`/not-service`へリダイレクトすることで到達する(要件定義書6章「Not Serviceページへの誘導」)。
 
 **レスポンス**: 常に`200 OK`(見つからない場合もHTTPエラーにはしない。Docker操作の成否を`status`フィールドで表現するのと同じ設計方針)
 

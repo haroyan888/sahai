@@ -34,6 +34,13 @@ function AuthShell({ children }: { children: ReactNode }) {
   )
 }
 
+/// Not Serviceページ用のシェル。エンドユーザー向けの画面なので、管理画面への
+/// リンクやログアウトを持つヘッダーは置かず、カード1枚を画面中央に置く
+/// (レイアウトはindex.cssの.public-shell / .not-service-card)
+function PublicShell({ children }: { children: ReactNode }) {
+  return <main className="public-shell">{children}</main>
+}
+
 function Layout({ children, onLogout }: { children: ReactNode; onLogout?: () => void }) {
   return (
     <div className="app-shell">
@@ -220,8 +227,16 @@ function App() {
     <Routes>
       {/* ログイン状態に関わらず公開されるルート。Traefikが非HTTPサービス・
           未登録サブドメイン宛てのアクセスをすべてsahai-server自身へ転送してくるため、
-          認証ゲートより先に判定する必要がある */}
-      <Route path="/not-service" element={<NotServicePage apiBaseUrl={API_BASE_URL} />} />
+          認証ゲートより先に判定する必要がある。このパスへは、sahai-serverが
+          Hostヘッダーを見てリダイレクトすることで到達する(api/mod.rs参照) */}
+      <Route
+        path="/not-service"
+        element={
+          <PublicShell>
+            <NotServicePage apiBaseUrl={API_BASE_URL} />
+          </PublicShell>
+        }
+      />
       <Route
         path="*"
         element={

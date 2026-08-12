@@ -14,6 +14,8 @@ sahai-core = { path = "../sahai-core" }
 tokio = { workspace = true }
 axum = { version = "0.8.9", features = ["multipart"] }
 tower-http = { version = "0.6", features = ["cors", "fs"] }
+# SPAフォールバック(api/mod.rs)からServeFileをリクエスト単位で呼ぶため
+tower = { version = "0.5", features = ["util"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
@@ -34,8 +36,6 @@ flate2 = "1"
 subtle = "2"
 
 [dev-dependencies]
-# Router全体をリクエスト単位でテストするため(api::router_testsのfallbackハンドラ検証等)
-tower = { version = "0.5", features = ["util"] }
 # 0002マイグレーションの回帰テストで、sqlxが使うchecksumアルゴリズム(SHA-384)を
 # そのまま計算するため(repo::testsのapplying_0002_...参照)
 sha2 = "0.10"

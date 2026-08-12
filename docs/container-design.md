@@ -43,7 +43,13 @@ Web UI(React SPA)は専用コンテナを持たず、`sahai-server`自身が`tow
 
 react-router-domによるクライアントサイドルーティングのため、`/services`や`/not-service`のような深いパスへの直接アクセス・リロードが404にならないよう、axum側で`ServeDir::fallback(ServeFile::new(index.html))`によるSPAフォールバックを実装している(`api/mod.rs`参照)。**`ServeDir::not_found_service`はステータスを強制的に404にするため使えない**(SPAのクライアントサイドルーティングには200でindex.htmlを返す必要がある)。
 
-Web UIはビルド時に`VITE_API_BASE_URL`を空文字のままにする(同一オリジン前提の相対パスfetchになる)。ただし[NotServicePage](../web/src/pages/NotServicePage.tsx)だけは、`sahai.example.com`以外の任意のサブドメイン(未登録サブドメイン・非HTTPサービスのサブドメイン)から表示されるため、`window.location.hostname`を明示的にクエリパラメータへ載せ、`https://sahai.example.com/api/not-service`へ**別オリジンで**問い合わせる(要件定義書6章参照)。
+Web UIはビルド時に`VITE_API_BASE_URL`を空文字のままにする(同一オリジン前提の相対パスfetchになる)。[NotServicePage](../web/src/pages/NotServicePage.tsx)は`sahai.example.com`以外の任意のサブドメイン(未登録サブドメイン・非HTTPサービスのサブドメイン)から表示されるが、こちらも相対パスのままでよい。Traefikのcatch-allルートおよび非HTTPサービス用のper-serviceルートは**パスを問わず**sahai-serverへ転送するため、`https://<任意のサブドメイン>/api/not-service`も同じsahai-serverに届く。どのサブドメインから見られているかはサーバー側では判別できない(SPAは静的ファイルを返すだけ)ので、`window.location.hostname`を明示的に`?host=`クエリパラメータへ載せて渡す(要件定義書6章参照)。
+
+### Not Serviceページへの振り分け(SPAフォールバック)
+
+catch-allルートが転送してくるリクエストのパスは通常`/`であり、そのままSPAを返すとエンドユーザーにログイン画面が出てしまう(要件定義書6章「Not Serviceページへの誘導」)。そのため`ServeDir`のフォールバック(=ディスク上に実ファイルが無いパス)を`ServeFile`から**自前のハンドラへ差し替え**、Hostヘッダーが`sahai.<ベースドメイン>`以外のサブドメインなら`/not-service`へリダイレクトし、それ以外は従来どおり`index.html`を返す(`api/mod.rs`参照)。
+
+`ServeDir`の前段(ミドルウェア)ではなくフォールバック側に置くのが要点で、`/assets/*`のような実在するアセットは`ServeDir`が先に配信するためリダイレクトされない。前段に置くとNot Serviceページ自身のJS/CSS取得までリダイレクトされ、ページが描画できなくなる。
 
 ## 2. sahai-serverのDockerfile
 
@@ -91,7 +97,11 @@ Traefikコンテナの`command`引数(`compose.yaml`/`dev.compose.yaml`のtraefi
 
 - **DNS-01**。証明書取得自体は80番ポートに依存しない
 - **80番(entryPoint `web`)はTraefikの静的設定としては素の待受のみを行う**。HTTP→HTTPSの恒久リダイレクトはentryPointの静的設定(`http.redirections.entryPoint`)では実装しない。entryPointの静的設定はTraefik起動後に変更できず、`SAHAI_HTTPS_REDIRECT`環境変数による起動時トグルができないため
-- **HTTP→HTTPSリダイレクトは`RouteWriter::write_static_admin_routes`が生成する動的ルート側で行う**(`SAHAI_HTTPS_REDIRECT`環境変数、既定true。config.rs参照)。trueのとき、各ルーター(per-service・管理画面・registry・catchall)を`entryPoints: [websecure]`に限定し、`entryPoints: [web]`専用の`redirectScheme`ミドルウェアを持つ`https-redirect`ルーター(全パスにマッチ)を追加で書き出す。falseのときはこれらの制限・追加ルーターを一切書き出さず、各ルーターから`tls`ブロックも省略する。**`tls`キーの有無がプロトコル可用性を直接左右する**: `tls`を指定する〈空でも〉とそのルーターはwebsecure〈:443〉専用になりweb〈:80〉では一切応答せず、逆に`tls`を省略するとweb専用になりwebsecureでは一切応答しない。単一ルーターで両プロトコルに応答させることはできないため、falseのときは`tls`ブロック自体を省略してweb専用の平文httpルーターにする。この設計により、`SAHAI_DOMAIN`をローカルなドメイン(例: `localhost`)にしたテスト環境で実際のLet's Encrypt証明書を取得できず自己署名証明書のままになる場合でも、`SAHAI_HTTPS_REDIRECT=false`にすれば平文httpのまま証明書検証エラーなくアクセスできる。**ただし`registry`ルーターだけは`SAHAI_HTTPS_REDIRECT`の値に関わらず常に`tls`ブロック(`entryPoints: [websecure]`)を維持する**(`certResolver`はhttps_redirect=falseのとき省略し無駄なACME証明書取得を試みない)。`docker push`/`docker login`等のDockerツールチェーンは既定でHTTPS必須でplain httpへのフォールバックを行わないため、registryのtlsを消すと`docker push`が`404 Not Found`で失敗する(自己署名証明書でのHTTPS応答自体はDocker側が問題なく受け入れる)。**Web UI・API・CLIから利用する際は、`SAHAI_HTTPS_REDIRECT=false`の場合`http://sahai.<domain>`のように`http://`でアクセスする必要がある**(`https://`だと`tls`が省略されたルートに到達できず404になる。CLIの`config.toml`の`control_plane.url`も合わせて変更すること)
+- **HTTP→HTTPSリダイレクトは`RouteWriter::write_static_admin_routes`が生成する動的ルート側で行う**(`SAHAI_HTTPS_REDIRECT`環境変数、既定true。config.rs参照)。前提として、**`tls`キーの有無がプロトコル可用性を直接左右する**: `tls`を指定する〈空でも〉とそのルーターはwebsecure〈:443〉専用になりweb〈:80〉では一切応答せず、逆に`tls`を省略するとweb専用になりwebsecureでは一切応答しない(`entryPoints`の指定に関わらずこうなる)。**単一のルーターで両プロトコルに応答させることはできない**。この制約のもとで、`SAHAI_HTTPS_REDIRECT`の値によって次のように書き分ける。
+  - **true**: 各ルーター(per-service・管理画面・registry・catchall)を`entryPoints: [websecure]` + `tls`(`certResolver`付き)にし、`entryPoints: [web]`専用の`redirectScheme`ミドルウェアを持つ`sahai_https_redirect`ルーター(全パスにマッチ、priority 1)を追加で書き出す。httpは301でhttpsへ寄せられるため、両プロトコルで同じ画面に着く
+  - **false**: 各論理ルートを**web用とwebsecure用の2本に分ける**。web用は`entryPoints: [web]` + `tls`なしの平文ルーター、websecure用は同じルール・同じ転送先で`entryPoints: [websecure]` + `tls: {}`のルーター(名前は`<router>_tls`。サービス名に`_`は使えないため衝突しない)。websecure用に`certResolver`を付けないのは、ローカルドメインで無駄なACME証明書取得を試みないためで、Traefik既定の自己署名証明書で応答する
+- **`SAHAI_HTTPS_REDIRECT`の値に関わらず、httpとhttpsは同じ挙動になる**(trueならhttpが301でhttpsへ、falseなら両方が同じ内容を直接返す)。以前はfalseのときweb専用ルーターしか書き出しておらず、`https://`だと404になっていた。プロトコルによって管理画面に入れたり入れなかったり、未登録サブドメインの案内ページが出たり404になったりするのは、原因の切り分けを著しく難しくするため2本に分ける方式へ変更した。`SAHAI_DOMAIN`をローカルなドメイン(例: `localhost`)にしたテスト環境では、`SAHAI_HTTPS_REDIRECT=false`にすれば`http://`で証明書検証エラーなくアクセスでき、`https://`でも(自己署名証明書の警告を許容すれば)同じ画面に到達できる
+- **`registry`ルーターだけは`SAHAI_HTTPS_REDIRECT`の値に関わらず常にwebsecure専用の1本**とする(`certResolver`はfalseのとき省略)。`docker push`/`docker login`等のDockerツールチェーンは既定でHTTPS必須でplain httpへのフォールバックを行わないため、平文の口を増やす意味がない。逆にregistryのtlsを消すと`docker push`が`404 Not Found`で失敗する(自己署名証明書でのHTTPS応答自体はDocker側が問題なく受け入れる)
 - **証明書解決(`certificatesResolvers`)**(resolver名は`letsencrypt`固定)。プロバイダ名は`SAHAI_DNS_PROVIDER`環境変数(既定値なし。特定プロバイダに固定しない)、通知先メールアドレスは`SAHAI_ACME_EMAIL`環境変数で指定する。Traefikが内部で使う[lego](https://github.com/go-acme/lego)ライブラリは100以上のDNSプロバイダに対応しており、`SAHAI_DNS_PROVIDER`とそのプロバイダが要求する認証情報の環境変数(下記)を差し替えるだけで別プロバイダに乗り換えられる。
   - プロバイダの認証情報(例: cloudflareなら`CF_DNS_API_TOKEN`)は`.sahai.env`(`SAHAI_DATA_ROOT`直下)に追加し、sahai-serverがbollard経由でTraefikコンテナ再作成時に直接Envとして渡す(compose.yamlのtraefikサービスに`env_file:`は無い。下記「DNS/証明書設定のWeb UI化」参照)。対応プロバイダと必要な環境変数の一覧: https://go-acme.github.io/lego/dns/index.html
 - `file` providerで `/var/sahai/traefik/dynamic` を`watch: true`で監視する(`--providers.file.directory`/`--providers.file.watch`のCLIフラグで指定)。sahai-server側は登録時・名前変更時に加えstart/restart時にも毎回冪等にルートファイルを書き出すだけでよく(要件定義書6章「ポート割り当て」)、Traefikへ明示的なリロード指示を送る必要はない
@@ -167,6 +177,20 @@ DNSプロバイダ固有の認証情報だけが渡せないのは、保存先�
 - **sahai-server**: リポジトリ全体を`/app`へbindマウントし、リリースビルド済みバイナリではなく`cargo run -p sahai-server`で起動する(`Dockerfile`の`dev`ステージ、Rustツールチェーンのみでソースは含まない)。ソースを編集したら`docker compose ... restart sahai-server`で再起動すれば、cargoの増分コンパイル(実測5〜7秒程度)で変更が反映される
 - **web**: `./web`を`/app/web`へbindマウントし、`npm run dev -- --host 0.0.0.0`(Viteの開発サーバー)で起動する(`Dockerfile`の`web-dev`ステージ)。ホスト側のファイル編集がそのままホットリロードされる
 - **traefik・registry**: `compose.yaml`とほぼ同じ定義をこのファイル内に複製している(依存を断ち切るためのトレードオフとして許容した)。本番データ(`/var/sahai`)を汚さないよう、DB・レジストリ等のデータは別ディレクトリ(`/var/sahai-dev`)に分離している
+
+**Not Serviceページ(1.5章)だけは、開発時もViteではなくsahai-serverが配信する**。`sahai.<domain>`宛てはdev-routes.ymlがViteへ振り分けるが、それ以外のサブドメインはTraefikのcatch-allがsahai-serverへ送るため。sahai-serverはリポジトリを`/app`へbindマウントしているので、ここで返るのは**ホスト側で最後に`npm run build`した`web/dist`の内容**であり、Viteのホットリロードは効かない。
+
+これは意図的にそうしている。catch-allをViteへ向ければホットリロードは効くようになるが、そうすると開発環境が**本番の経路(sahai-serverのSPAフォールバックによる`/not-service`への振り分け)を一切通らなくなる**。振り分けロジックの回帰を開発環境で踏めなくなるほうが損失が大きい(下記「catch-allの転送先」参照)。
+
+そのため、このページのフロントエンドを変更したら`web`ディレクトリで`npm run build`をやり直す必要がある。**ブラウザのスーパーリロード(Ctrl+F5)では解決しない**(古いのはブラウザのキャッシュではなくサーバーが返すファイル自体)。ページ単体の見た目を詰めるだけなら`sahai.<domain>/not-service`を直接開けばViteが配信するのでホットリロードが効く。バックエンド側を変更した場合は`docker compose -f dev.compose.yaml --env-file dev.env restart sahai-server`で再コンパイルする。
+
+### catch-allの転送先をsahai-serverから変えられない理由
+
+catch-all(`*.<domain>`のうちどのサービス用ルートにもマッチしなかったもの)の転送先は、Web UIそのものではなく**必ずsahai-server**でなければならない。理由は3つある。
+
+1. **本番にはWeb UI専用の転送先が存在しない**。Web UIはsahai-server自身が`ServeDir`で配信するため(1.5章)、「Web UIへ飛ばす」は「sahai-serverへ飛ばす」と同義である。別コンテナのViteが存在するのは開発時だけ
+2. **アセットとルートの区別はファイルサーバーにしかできない**。`/not-service`への振り分けはディスク上に実ファイルが無いパスに限る必要があり(要件定義書6章)、この判定は`ServeDir`のフォールバックに置くほかない。Traefikのミドルウェアでリダイレクトさせると、案内ページ自身のJS/CSS取得まで巻き込まれて白画面になる
+3. **同じホストの`/api/not-service`もsahai-serverへ届く必要がある**。案内ページは表示中のサブドメインのまま相対パスでこのAPIを叩く(3章)。catch-allをWeb UIへ向けると、サブドメインごとに`/api`を切り出す追加のルーターが要る
 
 **Web UI/APIのパス分割**: 本番ではWeb UI(静的ファイル)とAPIをsahai-server自身が単一のTraefikルートとして配信するが、開発時はsahai-server(cargo run)とweb(npm run dev)を別コンテナのまま起動するため、sahai-server自身が書き出すルート(常に自分自身への単一マージルート)の代わりに[traefik/dev-dynamic/dev-routes.yml](../traefik/dev-dynamic/dev-routes.yml)という開発専用の静的ルートでパス分割している(`/api/*` → sahai-server、それ以外 → web)。このファイルはTraefikコンテナ内の`/var/sahai/traefik/dynamic/`(sahai-serverが動的ルートを書き出すのと同じディレクトリ)へ、単一ファイルとして重ねてbind-mountしている。過去に踏んだ「read-onlyマウント済みディレクトリの中に単一ファイルを重ねてマウントできない」罠を避けるため、この開発用traefikのマウントだけは読み取り専用にしていない。
 

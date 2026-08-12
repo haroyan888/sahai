@@ -241,6 +241,41 @@ a {
   margin-bottom: var(--space-5);
 }
 
+/* ------------------------------------------------------------
+   Not Serviceページ(エンドユーザー向けの案内。ヘッダーを持たず、
+   カード1枚を画面中央に置くだけのレイアウト)
+   ------------------------------------------------------------ */
+
+/* #rootがflex column・min-height:100vhなので、flex:1で残り高さいっぱいに広がる。
+   その上でカードを縦横中央に置く */
+.public-shell {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-5);
+}
+
+.not-service-card {
+  width: 50%;
+  /* align-items:centerによりflexアイテムは縦に伸びず、高さはコンテンツなりになる。
+     .cardの下マージンは中央からのズレになるため打ち消す */
+  margin-bottom: 0;
+}
+
+/* カード内の最後の要素(段落・ポート表)の下マージンが、カード下部だけ
+   余白を厚くしてしまうのを防ぐ */
+.not-service-card > :last-child {
+  margin-bottom: 0;
+}
+
+/* 画面が狭いと50%では読めなくなるため横幅いっぱいに使う */
+@media (max-width: 640px) {
+  .not-service-card {
+    width: 100%;
+  }
+}
+
 .subcard {
   background: var(--bg);
   border: 1px solid var(--border);
