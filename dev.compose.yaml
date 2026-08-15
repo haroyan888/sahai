@@ -125,8 +125,6 @@ services:
       # 公開ポートを持つのはtraefikのみ(このcomposeファイル全体でここだけ)
       - "${SAHAI_TRAEFIK_HTTP_PORT:-80}:80"
       - "443:443"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     networks:
       - sahai
 
@@ -172,7 +170,6 @@ services:
       # (route_writer.rs)、既定値もそれに揃える
       - SAHAI_REGISTRY_URL=${SAHAI_REGISTRY_URL:-registry.sahai.${SAHAI_DOMAIN:-localhost}}
       - SAHAI_HTTPS_REDIRECT=${SAHAI_HTTPS_REDIRECT:-false}
-      - SAHAI_DOCKER_HOST_ADDRESS=host.docker.internal
       - SAHAI_REGISTRY_INTERNAL_URL=${SAHAI_REGISTRY_INTERNAL_URL:-http://registry:5000}
       # `sahai service create`(サーバー側build+push)を検証する場合のみ設定する。
       # 同じ値からregistry-auth-initがhtpasswdを作るため、両者は常に一致する

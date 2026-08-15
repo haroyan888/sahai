@@ -125,16 +125,13 @@ Traefikコンテナの`command`引数(`compose.yaml`/`dev.compose.yaml`のtraefi
   - プロバイダの認証情報(例: cloudflareなら`CF_DNS_API_TOKEN`)は`.sahai.env`(`SAHAI_DATA_ROOT`直下)に追加し、sahai-serverがbollard経由でTraefikコンテナ再作成時に直接Envとして渡す(compose.yamlのtraefikサービスに`env_file:`は無い。下記「DNS/証明書設定のWeb UI化」参照)。対応プロバイダと必要な環境変数の一覧: https://go-acme.github.io/lego/dns/index.html
 - `file` providerで `/var/sahai/traefik/dynamic` を`watch: true`で監視する(`--providers.file.directory`/`--providers.file.watch`のCLIフラグで指定)。sahai-server側は登録時・名前変更時に加えstart/restart時にも毎回冪等にルートファイルを書き出すだけでよく(要件定義書6章「ポート割り当て」)、Traefikへ明示的なリロード指示を送る必要はない
 
-### Traefikから Docker ホストの公開ポートへの到達性
+### HTTPサービス(`is_http`)への到達性
 
-`is_http`を持つサービスへのルーティング先は、sahai-serverが `http://<docker_host_address>:<host_port>` という形でTraefikルート定義に書き出す(`RouteWriter`、[backend-architecture.md](./backend-architecture.md) 3章)。TraefikコンテナからDockerホスト自身が公開しているポートへ到達させるため、`compose.yaml`のtraefikサービスに
+`is_http`を持つサービスへのルーティング先は、sahai-serverが `http://svc-<ServiceContainer.id>:<container_port>` という形でTraefikルート定義に書き出す(`RouteWriter::resolve_target_url`、[route_writer.rs](../crates/sahai-server/src/traefik/route_writer.rs))。サービスのコンテナは土台の3コンテナと同じ`sahai`ネットワークに参加するため(1章参照)、Traefikはコンテナ名をDockerの組み込みDNSで解決し、コンテナ内ポートへ直接転送する。
 
-```yaml
-extra_hosts:
-  - "host.docker.internal:host-gateway"
-```
+**`is_http`のポートはホストに公開しない**(要件定義書6章)。公開すると`https://<サービス名>.<ドメイン>`とは別に`http://<ホスト>:<host_port>`でも同じアプリに到達でき、そちらはTraefikを通らないためTLSもHTTP→HTTPSリダイレクトも効かず、公開サーバーでは意図しない平文の口になるためである。
 
-を設定し、`SAHAI_DOCKER_HOST_ADDRESS=host.docker.internal` をsahai-serverへ環境変数で渡している。これはDocker Engine 20.10以降のLinuxで有効な機能。
+そのためTraefikがDockerホスト自身の公開ポートへ到達する必要はなく、`host.docker.internal`(`extra_hosts`の`host-gateway`)も使わない。以前は`is_http`のポートもホストに公開し、Traefikから `http://host.docker.internal:<host_port>` へ転送する設計だったが、上記の理由でコンテナ名への直接転送へ移行した際に不要になっている。ホストに公開されるのは`is_http`以外のポートだけで、そちらはTraefikを介さず利用者が直接接続する。
 
 ### 非HTTPサービス(Not Serviceページ)への到達性
 
