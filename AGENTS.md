@@ -19,8 +19,6 @@
 <種別>: <変更内容の要約（日本語）>
 
 <変更理由や背景の説明（1〜2文、日本語）>
-
-Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
 ```
 
 - 1行目は `docs:` `feat:` `fix:` `refactor:` `build:` などの種別プレフィックスに続けて、変更内容を日本語で簡潔に要約する
