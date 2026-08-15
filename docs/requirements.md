@@ -30,7 +30,9 @@ Docker host (1台)
 
 - リバースプロキシは **Traefik** を採用。動的設定ディレクトリ(file provider)にルート定義を書き出すだけで反映されるため、Control plane側の実装が最小限で済む。
 - コンテナイメージレジストリは **`registry:2`(Docker公式Distribution)** を採用し、`registry.sahai.example.com` としてTraefik配下にホストする。HarborのようなUI・RBAC・脆弱性スキャン機能は、単独ユーザー運用では過剰なため見送り、必要になった時点で移行を検討する。
-- レジストリ認証は `REGISTRY_AUTH=htpasswd` を使用し、単独ユーザー1アカウント分の認証情報を初回セットアップ時に生成する。`sahai` 自体は認証情報を保持せず、事前に `docker login registry.sahai.example.com` 済みであることを前提とする。
+- レジストリ認証は `REGISTRY_AUTH=htpasswd` を使用し、単独ユーザー1アカウント分の認証情報を初回セットアップ時に生成する。この認証情報を提示する側は**2系統ある**(12章参照)。
+  - **利用者のマシン**(`sahai container push`): `sahai`自体は認証情報を保持せず、事前に `docker login registry.sahai.example.com` 済みであることを前提とする
+  - **Control plane自身**(`sahai service create`/`service update`のサーバー側ビルド+push、およびimage型サービスの`docker pull`): 無人で実行するため、DBの`registry_username`/`registry_password`(11章)に保持する。初回セットアップ時にセットアップスクリプトが設定し、以後はWeb UIの「レジストリ設定」から変更する
 - **永続化データの配置**: ホスト上のすべての永続化データを `/var/sahai/` 以下に集約する。
   ```
   /var/sahai/
@@ -138,8 +140,10 @@ falseにすると80番から平文httpのまま直接サービスへアクセス
 ## 5. イメージ管理
 
 - バージョン管理は行わず、**上書き方式**(常に最新イメージで置き換え)
-- ビルド〜レジストリ登録はCLI(`sahai container push`)で行う。詳細は12章参照
-- **Web UIでのサービス登録が先、CLIでのpushは後**という順序を必須とする。これにより「レジストリのイメージ名」と「Control planeのサービス名」の名前空間を一致させ、対応関係の曖昧さをなくす
+- ビルド〜レジストリ登録はCLIで行う。**ビルド場所の異なる2つの経路がある**(詳細は12章参照)
+  - `sahai container push` — 利用者のマシンでビルドしてpushする。**対象サービスがWeb UIで登録済みであることを必須とし**、未登録ならエラー終了する
+  - `sahai service create` / `sahai service update` — プロジェクトをサーバーへアップロードし、**サーバー側でビルドしてpushする**。`create`はサービスレコードの新規作成まで行うため事前登録を必要としない(`update`は登録済みサービスが対象)
+- いずれの経路でも「レジストリのイメージ名」と「Control planeのサービス名」の名前空間は一致する。`container push`は事前登録の必須化によって、`service create`/`service update`はサーバー側が登録とタグ生成を同じ規則で行うことによって担保する
 - サービスのstart/restart時は、`docker run`/`docker compose up` の前に必ず `docker pull` を実行し、レジストリの最新イメージを取得してから起動する(ローカルキャッシュの古いイメージで起動されることを防ぐため)
 
 ## 6. サービス登録機能
