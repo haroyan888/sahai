@@ -13,7 +13,58 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # 変更されたパスから、どのジョブを回す必要があるかを判定する。
+  #
+  # ワークフロー全体のon.pushにpaths:を書く方法は採らない。パスフィルタで
+  # ワークフローごとスキップされた場合、そのチェックは"Pending"のまま残り、
+  # 必須チェックにしているとPRがマージできなくなるため
+  # (ジョブ単位のif:でのスキップは"skipped"として報告され、必須チェックを満たす)。
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      scripts: ${{ steps.filter.outputs.scripts }}
+      web: ${{ steps.filter.outputs.web }}
+    steps:
+      # push時の差分検出はローカルのgit履歴を使う(PR時はGitHub APIなので不要)。
+      # 履歴は小さいので全部取る
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          # pushでは同じブランチのpush直前のコミットと比較する。
+          # PRではbase未指定にしてベースブランチとの差分をAPIから取る
+          base: ${{ github.event_name == 'push' && github.ref || '' }}
+          filters: |
+            ci: &ci
+              - '.github/workflows/ci.yml'
+            rust:
+              - *ci
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'crates/**'
+              # sqlx::migrate!とinclude_str!でビルド時にバイナリへ埋め込まれる
+              - 'migrations/**'
+            scripts:
+              - *ci
+              - 'setup.sh'
+              - 'setup.ps1'
+              - 'clean.sh'
+              - 'clean.ps1'
+              - 'update.sh'
+              - 'update.ps1'
+              - 'compose.yaml'
+              - 'dev.compose.yaml'
+            web:
+              - *ci
+              - 'web/**'
+
   rust:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,6 +96,8 @@ jobs:
   # setup.sh/clean.sh等はこれまでCIの対象外だった。利用者が最初に触る部分であり、
   # 壊れても他のジョブでは気付けないため、専用のジョブで検査する。
   scripts:
+    needs: changes
+    if: needs.changes.outputs.scripts == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -81,6 +134,8 @@ jobs:
           docker compose -f dev.compose.yaml config --quiet
 
   web:
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
