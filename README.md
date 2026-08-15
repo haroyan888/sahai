@@ -113,6 +113,7 @@ sahai container push myapp --deploy  # ローカルでビルドしてpush、再�
 
 | ファイル | 内容 |
 |---|---|
+| [architecture.md](docs/architecture.md) | 全体構成(登場人物と繋がりを1枚で) |
 | [development.md](docs/development.md) | 開発環境の起動と注意点 |
 | [requirements.md](docs/requirements.md) | 要件定義 |
 | [api-design.md](docs/api-design.md) | API設計 |

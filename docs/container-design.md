@@ -13,7 +13,13 @@ Docker host (1台)
     ├─ db/sahai.sqlite3         (600)
     ├─ backups/                 (update.sh/ps1が更新前に取るDBのコピー。最新5世代)
     ├─ .sahai.env               (DNSプロバイダ認証情報のブリッジファイル。600。4章参照)
+    ├─ setup-token              (初期設定用のワンタイムトークン。600。未設定で起動したときだけ
+    │                            sahai-serverが生成し、初期設定の成功で削除する。要件定義書4章)
     ├─ services/<id>/...        (sahai-serverが管理するサービスのボリューム)
+    ├─ uploads/                 (service create/updateで受け取ったtar.gzの展開先。
+    │                            処理後に削除し、起動時にも残骸を掃除する)
+    ├─ registry-auth/htpasswd   (レジストリの認証ファイル。setupスクリプトがコンテナ経由で
+    │                            生成する。3章参照)
     ├─ traefik/dynamic/         (sahai-serverが書き出す動的ルート定義。per-serviceの
     │                            ルートに加え、管理画面用のstatic-routes.ymlも起動時に
     │                            一度だけ書き出す。4章参照)

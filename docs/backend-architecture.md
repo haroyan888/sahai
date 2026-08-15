@@ -34,43 +34,61 @@ sahai/                          (workspace root)
 
 ```
 sahai-server/src/
-├── main.rs         起動処理: config読込 → DBプール作成 → axum Router組立 → Health Taskをtokio::spawn
-├── config.rs        環境変数/設定読込(Bearerトークン、DBパス、/var/sahai配下の各パス、レジストリURL)
-├── error.rs          AppError(全レイヤー共通のエラー型)。IntoResponseでapi-design.md 1章のエラー形式に変換
-├── auth.rs            Bearerトークン検証ミドルウェア
+├── main.rs         起動処理: config読込 → DBプール作成 → 設定シード → Traefik整合 → axum Router組立 → Health Taskをtokio::spawn
+├── config.rs        環境変数からのブートストラップ値(bind_addr・データルート・DBパス等)
+├── settings.rs       実行時に変更可能な設定(SharedSettings)。正はDBで、環境変数は初回起動時のシード用
+├── state.rs           AppState(DBプール・SharedSettings・Config等の共有状態)
+├── domain.rs           ドメインモデル(repo層の行とapi層のDTOの間に立つ内部型)
+├── error.rs             AppError(全レイヤー共通のエラー型)。IntoResponseでapi-design.md 1章のエラー形式に変換
+├── auth.rs               Bearerトークン検証ミドルウェア
+├── setup_token.rs         初期設定用ワンタイムトークンの生成・検証・失効(要件定義書4章)
+├── env_file.rs             `.sahai.env`の特定キーだけを書き換える/追記するユーティリティ
+├── fs_perms.rs              秘匿値を含むファイル・ディレクトリへの600/700適用(要件定義書4章)
 │
 ├── api/              【HTTPハンドラ層】リクエスト⇄DTOの変換とservice層の呼び出しのみ。ビジネスロジックは持たない
-│   ├── mod.rs         Router定義
-│   ├── services.rs    各エンドポイントのハンドラ関数
-│   └── dto.rs          リクエスト/レスポンスのserde構造体(api-design.mdのTS型に対応)
+│   ├── mod.rs         Router定義(認証層の内外の切り分け・SPAフォールバック・CORS)
+│   ├── services.rs    サービス関連の各エンドポイント(upload/update_uploadを含む)
+│   ├── setup.rs        POST /api/setup(認証層の外側。セットアップトークンで保護)
+│   ├── settings.rs      基本設定・DNS/証明書設定・レジストリ設定のエンドポイント
+│   ├── not_http_service.rs  GET /api/not-service(認証不要の公開API)
+│   └── dto.rs            リクエスト/レスポンスのserde構造体(api-design.mdのTS型に対応)
 │
 ├── service/          【ドメイン層】オーケストレーションとビジネスルール。sahai-coreのロジックをDB/Docker/Traefikと組み合わせる
 │   ├── mod.rs
 │   ├── registration.rs  登録: バリデーション→DB挿入(トランザクション)。Traefikルートはここでは生成しない(start/restart時に生成。5.1参照)
 │   ├── update.rs         PUT: nameの即時反映とその他フィールドの遅延反映を分岐
-│   ├── compose_sync.rs   compose_content編集時のServiceContainer diff適用(core::composeを使用)
-│   ├── lifecycle.rs      start/stop/restartのオーケストレーション、冪等性判定
-│   └── deletion.rs       削除フロー(Traefikルート削除→コンテナ停止→DB削除の順序制御)
+│   ├── upload.rs          アップロードされたプロジェクトのサーバー側ビルド+push→登録/更新(要件定義書12章)
+│   ├── compose_sync.rs     compose_content編集時のServiceContainer diff適用(core::composeを使用)
+│   ├── port_check.rs        host_portの衝突検証。登録(POST)と更新(PUT)で共有
+│   ├── lifecycle.rs          start/stop/restartのオーケストレーション、冪等性判定
+│   ├── deletion.rs            削除フロー(Traefikルート削除→コンテナ停止→DB削除の順序制御)
+│   └── settings.rs             設定保存のオーケストレーション(DB永続化+SharedSettings反映+Traefik再生成)
 │
 ├── repo/             【DBアクセス層】sqlxクエリのみ。ビジネスロジックを持たない
 │   ├── mod.rs          トランザクションヘルパー(BEGIN IMMEDIATE)
 │   ├── services.rs
 │   ├── containers.rs
 │   ├── ports.rs
-│   └── volumes.rs
+│   ├── volumes.rs
+│   └── settings.rs      Settings(1行)とDnsProviderCredential
 │
 ├── docker/            【Docker操作層】
 │   ├── mod.rs           `ContainerLifecycle`トレイトの定義と、source_typeに応じた実装の選択
 │   ├── image_runtime.rs    ImageRuntime: bollardでrun/stop/pull(image型のライフサイクル)
 │   ├── compose_runtime.rs  ComposeRuntime: `docker compose`サブプロセスでup/down(compose型のライフサイクル)
-│   ├── override_gen.rs     compose型のoverride.yml生成(core::composeとnamingを使用)
-│   └── inspector.rs        bollardでのinspect/stats。**source_typeに関わらず共通**(下記コラム参照)
+│   ├── build_runtime.rs     `docker build`/`docker push`のサブプロセス実行(service::uploadから使う)
+│   ├── registry_login.rs     `docker login`のサブプロセス実行(起動時とレジストリ設定保存時)
+│   ├── override_gen.rs        compose型のoverride.yml生成(core::composeとnamingを使用)
+│   ├── log_stream.rs           コンテナログの読み出し(SSE配信用。保存も加工もしない)
+│   └── inspector.rs             bollardでのinspect/stats。**source_typeに関わらず共通**(下記コラム参照)
 │
-├── traefik/           【Traefikルート生成層】
-│   └── route_writer.rs   ルートYAML生成・書き込み・削除。is_httpの有無で実サービス(Docker宛て)/
-│                          Web UIコンテナ(Not Serviceページ用)に分岐(api/not_http_service.rs参照)
+├── traefik/           【Traefik操作層】
+│   ├── route_writer.rs   ルートYAML生成・書き込み・削除。is_httpの有無で実サービス(コンテナ宛て)/
+│   │                      sahai-server自身(Not Serviceページ用)に分岐(api/not_http_service.rs参照)
+│   └── container.rs       Traefikコンテナ自体の再作成(静的設定であるDNSプロバイダ/ACMEメールの反映)
 │
 └── health/            【バックグラウンドタスク】
+    ├── mod.rs
     └── task.rs          tokio::spawnされる10秒ループ。repoとdocker::inspectorのみに依存し、api/serviceレイヤーからは独立
 ```
 
