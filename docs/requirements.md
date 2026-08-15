@@ -35,10 +35,19 @@ Docker host (1台)
   - **Control plane自身**(`sahai service create`/`service update`のサーバー側ビルド+push、およびimage型サービスの`docker pull`): 無人で実行するため、DBの`registry_username`/`registry_password`(11章)に保持する。初回セットアップ時にセットアップスクリプトが設定し、以後はWeb UIの「レジストリ設定」から変更する
 - **永続化データの配置**: ホスト上のすべての永続化データを `/var/sahai/` 以下に集約する。
   ```
-  /var/sahai/
-  ├─ db/sahai.sqlite3            -- Control planeのSQLite DB
+  /var/sahai/                        -- ディレクトリ自体は700(下記「秘匿値の保存」)
+  ├─ db/sahai.sqlite3               -- Control planeのSQLite DB(600)
+  ├─ backups/                        -- 更新スクリプトが更新前に取るDBのコピー(最新5世代)
+  ├─ .sahai.env                       -- DNSプロバイダの認証情報(600)。Traefik再作成時にEnvとして渡す
+  ├─ setup-token                      -- 初期設定用のワンタイムトークン(600)。未設定で起動したときだけ生成し、
+  │                                      初期設定の成功で削除する(下記「セキュリティモデル」)
   ├─ services/<service_id>/<正規化パス>/  -- 各サービスの永続化ボリューム(6章参照)
-  └─ traefik/dynamic/              -- Traefikの動的設定ファイル置き場(Control planeが書き出す)
+  ├─ compose-projects/<service_id>/   -- compose型のbase.yml/override.yml/.env(`.env`は600)
+  ├─ uploads/                         -- service create/updateで受け取ったtar.gzの展開先(処理後に削除)
+  ├─ traefik/dynamic/                 -- Traefikの動的設定ファイル置き場(Control planeが書き出す)
+  ├─ traefik/acme/acme.json           -- Let's Encryptで取得した証明書(Traefikが管理)
+  ├─ registry/                        -- レジストリのイメージストレージ
+  └─ registry-auth/htpasswd           -- レジストリの認証ファイル(セットアップスクリプトが生成)
   ```
 - **Control plane自体のデプロイ形態**: Dockerコンテナとして稼働させる。ホストのDocker engineを操作するため `/var/run/docker.sock` をマウントする。加えて、Control planeはbollard/`docker compose`経由でdockerdに `-v /var/sahai/services/...` のようなバインドマウント指示を送るため、そのパスは**ホスト側のパスとして解釈される**。したがってControl planeコンテナ自体も `/var/sahai` を**ホストと同一パス**でマウントする(例: `-v /var/sahai:/var/sahai`)。Traefikコンテナも同様に `/var/sahai/traefik/dynamic` をホストと同一パスでマウントし、Control planeが書き出した設定を読めるようにする。
 
