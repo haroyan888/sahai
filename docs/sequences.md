@@ -77,6 +77,87 @@ sequenceDiagram
     end
 ```
 
+## 2.5 CLIアップロード登録・更新(`sahai service create` / `sahai service update`)
+
+2章の`container push`が利用者のマシンでビルドするのに対し、こちらはプロジェクト一式をサーバーへ送り、**サーバー側でビルド+push**する(要件定義書5章・12章)。レジストリの資格情報も利用者ローカルの`docker login`ではなく、Control plane自身がDBに持つ値を使う。
+
+### 新規登録(`sahai service create`)
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant CLI
+    participant CP as Control Plane
+    participant Docker as Docker Engine(サーバー)
+    participant Registry
+
+    User->>CLI: sahai service create <name> [--context .]
+    CLI->>CLI: composeのbuild:対象を検証(precheck)
+    CLI->>CLI: contextをtar.gz化(.dockerignore尊重、archive)
+    CLI->>CP: POST /api/services/upload (multipart: metadata + archive)
+    Note over CLI,CP: ビルド完了までHTTP接続をブロックして待つ(同期処理)
+    CP->>CP: サービス名の検証・重複確認・レジストリ資格情報の有無確認
+    alt 名前が重複 / 資格情報が未設定
+        CP-->>CLI: 409 / 422
+        CLI-->>User: エラー終了(サービスレコードは作られない)
+    else 検証OK
+        CP->>CP: 一時ディレクトリへtar.gzを展開(UUIDで並行アップロードの衝突を回避)
+        CP->>CP: composeファイルの有無でimage型/compose型を判定
+        CP->>Docker: docker build(compose型はbuild:を持つ全サービス)
+        CP->>Registry: docker push(DBの資格情報でlogin)
+        alt ビルド/pushが1件でも失敗
+            CP-->>CLI: エラー
+            CLI-->>User: エラー終了
+        else 成功
+            CP->>CP: service::registration::createへ委譲(「1. サービス登録」と同じ)
+            Note over CP: ポート・env・ボリュームは空。Web UIで設定してから起動する
+            CP-->>CLI: 200 + ServiceDetail
+            CLI-->>User: 完了
+        end
+    end
+```
+
+ビルド→登録の順で処理するため、ビルドが失敗した場合は登録処理自体に到達せず、それがそのままロールバックになる。展開した一時ディレクトリは成功・失敗どちらの経路でも削除される。
+
+### 更新(`sahai service update`)
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant CLI
+    participant CP as Control Plane
+    participant Docker as Docker Engine(サーバー)
+    participant Registry
+
+    User->>CLI: sahai service update <name> [--deploy]
+    CLI->>CLI: precheck + tar.gz化(createと同じ)
+    CLI->>CP: POST /api/services/{name}/upload (multipart)
+    CP->>CP: 対象サービスの存在確認
+    alt 未登録
+        CP-->>CLI: 404
+    else 登録済み
+        CP->>CP: tar.gzを展開し、構成が登録済みのsource_typeと一致するか確認
+        alt 不一致
+            CP-->>CLI: 422
+        else 一致
+            CP->>Docker: docker build(常に:latestを上書き)
+            CP->>Registry: docker push
+            opt compose型
+                CP->>CP: 新しいcompose_contentを保存しServiceContainerを同期
+                Note over CP: 「7. compose_content編集」と同じdiffロジック。<br/>既存コンテナのports/volumesは維持される
+            end
+            CP-->>CLI: 200 + ServiceDetail
+            opt --deploy指定
+                CLI->>CP: POST /api/services/{name}/restart
+                Note over CP: 「4. 再起動」参照
+            end
+            CLI-->>User: 完了
+        end
+    end
+```
+
+`--deploy`を付けない場合、ビルドしたイメージと保存した`compose_content`の実際の反映には別途restartが必要(他のメタデータ更新と同様)。
+
 ## 3. 起動(POST /api/services/{id}/start)
 
 ```mermaid

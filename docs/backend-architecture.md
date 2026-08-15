@@ -129,13 +129,19 @@ sahai-cli/src/
 ├── config.rs            ~/.config/sahai/config.toml の読み書き
 ├── api_client.rs        Control Plane APIを叩く薄いreqwestクライアント(api-design.mdのDTOをそのまま利用)
 └── commands/
-    ├── register_push.rs  ビルド+push処理。sahai-core::{validation, naming, compose}を使用
-    ├── service.rs         list/status/start/stop/restart(api_clientの薄いラッパー)
+    ├── container_push.rs  ローカルビルド+push処理。sahai-core::{validation, naming, compose}を使用
+    ├── service_create.rs  プロジェクトをtar.gzでアップロードし、サーバー側ビルド+push+新規登録
+    ├── service_update.rs  同じくアップロードし、サーバー側ビルド+push(登録済みサービスが対象)
+    ├── archive.rs          contextのtar.gz化(.dockerignore尊重)。上記2つで共有
+    ├── precheck.rs         アップロード前のローカル検証(composeサービス名・タグ長)。上記2つで共有
+    ├── service.rs          list/status/start/stop/restart(api_clientの薄いラッパー)
     ├── login.rs
     └── config_cmd.rs
 ```
 
-`register_push.rs`が`sahai-core::compose`の`build:`保有サービス抽出ロジックと`sahai-core::naming`のタグ生成ロジックを、`sahai-server`の`docker/override_gen.rs`と全く同じ実装で呼び出す点が、workspace分割の主目的(1章参照)。
+ビルドを**どこで行うか**でコマンドが2系統に分かれる(要件定義書5章・12章)。`container_push.rs`は利用者のマシンで`docker build`/`docker push`を実行し、`service_create.rs`/`service_update.rs`はプロジェクトをアップロードしてサーバー側(`service::upload`)にビルドさせる。
+
+`container_push.rs`が`sahai-core::compose`の`build:`保有サービス抽出ロジックと`sahai-core::naming`のタグ生成ロジックを、`sahai-server`の`docker/override_gen.rs`と全く同じ実装で呼び出す点が、workspace分割の主目的(1章参照)。`precheck.rs`も同じ`sahai-core`の関数でアップロード前の早期検証を行う(正としての検証はサーバー側で再実行される)。
 
 ## 5. 操作とモジュールの対応
 
@@ -144,6 +150,7 @@ sahai-cli/src/
 | 操作 | エントリ | 中核 | 依存 | シーケンス |
 |---|---|---|---|---|
 | 登録 | `api::services::create` | `service::registration` | `sahai_core::validation` / `repo::{services,containers,ports,volumes}` | [1](./sequences.md) |
+| アップロード登録・更新 | `api::services::{upload,update_upload}` | `service::upload::{create_from_archive,update_from_archive}` | `docker::{build_runtime,registry_login}` / `service::registration`(新規時) / `service::compose_sync`(更新時) | [2.5](./sequences.md) |
 | 起動・停止・再起動 | `api::services::{start,stop,restart}` | `service::lifecycle` | `docker::{ImageRuntime,ComposeRuntime}`(`ContainerLifecycle`) / `traefik::route_writer` / `repo::services` | [3](./sequences.md)・[4](./sequences.md) |
 | 削除 | `api::services::delete` | `service::deletion` | `traefik::route_writer` → `docker::ContainerLifecycle` → `repo::services` の順 | [5](./sequences.md) |
 | 名前変更 | `api::services::update` | `service::update` | `traefik::route_writer`(旧ルート削除+新ルート書き出し) | [6](./sequences.md) |
