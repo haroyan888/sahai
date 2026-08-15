@@ -60,11 +60,6 @@ services:
       - "80:80"
       # 実サービスのルーティングは443が行う
       - "443:443"
-    extra_hosts:
-      # Linux上のDocker Engineでは`host.docker.internal`が自動解決されないため明示する。
-      # sahai-serverが生成するTraefikルート(is_httpサービスのbackend URL)が
-      # このホスト名を使う
-      - "host.docker.internal:host-gateway"
     networks:
       - sahai
 
@@ -105,10 +100,6 @@ services:
       # 実際のLet's Encrypt証明書を取得できず自己署名証明書のままになるため、
       # falseにすると平文httpのまま直接アクセスできる(本番のドメインではtrueのまま使う)
       - SAHAI_HTTPS_REDIRECT=${SAHAI_HTTPS_REDIRECT:-true}
-      # Traefik(別コンテナ)からDockerホストのpublishedポートへ到達するためのアドレス。
-      # Linux + Docker Engine 20.10+ の場合、Traefik側に
-      # extra_hosts: ["host.docker.internal:host-gateway"] が必要(下記traefikサービス参照)
-      - SAHAI_DOCKER_HOST_ADDRESS=host.docker.internal
       # registry.sahai.<domain>宛のTraefikルート生成用、registryコンテナのアドレス
       # 。
       # .envで上書きしない限り既定値(http://registry:5000)のまま使えばよい
