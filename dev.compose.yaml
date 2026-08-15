@@ -102,7 +102,7 @@ services:
       - --certificatesresolvers.letsencrypt.acme.dnschallenge.provider=${SAHAI_DNS_PROVIDER:-}
       - --certificatesresolvers.letsencrypt.acme.dnschallenge.resolvers=1.1.1.1:53,1.0.0.1:53
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # docker.sockはマウントしない(本番のcompose.yamlと同じ理由)
       # sahai-server(dev)と共有する動的ルートディレクトリ。本番と違い読み書き可能で
       # マウントする(この下に開発専用の静的ルートを1ファイルだけ重ねてbind-mountする
       # ため。:roのままだとマウントポイントを作成できない罠を過去に踏んでいる)

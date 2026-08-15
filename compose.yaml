@@ -40,7 +40,8 @@ services:
       - --certificatesresolvers.letsencrypt.acme.dnschallenge.provider=${SAHAI_DNS_PROVIDER:-}
       - --certificatesresolvers.letsencrypt.acme.dnschallenge.resolvers=1.1.1.1:53,1.0.0.1:53
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # docker.sockはマウントしない。ルート定義はfile provider(下記--providers.file)
+      # だけで供給しており、docker providerは有効にしていないため必要がない
       - /var/sahai/traefik/dynamic:/var/sahai/traefik/dynamic:ro
       - /var/sahai/traefik/acme:/acme
     # DNSプロバイダの認証情報(例: cloudflareならCF_DNS_API_TOKEN)は、以前はここに
