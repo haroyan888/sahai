@@ -532,7 +532,7 @@ Control planeのAPI(`GET /api/services`、`POST /api/services/{id}/start` 等)�
 
 `list`は既定で人間可読な固定幅テーブル(NAME/STATUS/HEALTH/TYPE/SUBDOMAIN列)を表示し、`--json`指定時は`GET /api/services`の生レスポンスをそのままpretty printする。
 
-`status`は`GET /api/services/{name}`(`ServiceDetail`)と`GET /api/services/{name}/stats`(CPU/メモリ使用量)の2回のAPI呼び出しの結果を、既定では「名前・サブドメイン・種別・ステータス・ヘルス(最終チェック時刻)」のヘッダーと、コンテナ別の「NAME/HEALTH/CPU/MEM/PORTS/VOLUMES」テーブルにまとめて整形表示する(`route_warning`があれば併せて警告として表示)。`GET /api/services/{name}/health`は呼ばない — `HealthResponse`が返す`health_status`/`last_health_check_at`は`ServiceDetail`(サービス全体・コンテナ別とも)に既に含まれる完全な重複情報であり、2回の別呼び出しの間に状態が変わりうる不整合の余地もあるため。`--json`指定時は`{"service": ..., "stats": ...}`という1つのJSONオブジェクトを出力する(`health`キーは含めない)。
+`status`は`GET /api/services/{name}`(`ServiceDetail`)と`GET /api/services/{name}/stats`(CPU/メモリ使用量)の2回のAPI呼び出しの結果を、既定では「名前・サブドメイン・種別・ステータス・ヘルス(最終チェック時刻)」のヘッダーと、コンテナ別の「NAME/HEALTH/CPU/MEM/PORTS/VOLUMES」テーブルにまとめて整形表示する(`route_warning`があれば併せて警告として表示)。`health_status`/`last_health_check_at`は`ServiceDetail`(サービス全体・コンテナ別とも)に既に含まれるため、ヘルス専用のエンドポイントは持たない(以前は`GET /api/services/{name}/health`が存在したが、`ServiceDetail`との完全な重複だったため廃止した)。`--json`指定時は`{"service": ..., "stats": ...}`という1つのJSONオブジェクトを出力する。
 
 `start`/`stop`/`restart`は`ServiceDetail`から名前・`status`・`health_status`を抜き出した1行のメッセージ(例:「サービス 'myapp' を起動しました(status: running, health: unknown)。」)を既定表示とし、`route_warning`があれば続けて警告行を表示する。`--json`指定時は従来通り`ServiceDetail`をそのままpretty printする。
 

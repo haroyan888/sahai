@@ -75,10 +75,9 @@ struct ContainerStatsDto {
 }
 
 /// `GET /api/services/{name}`(`ServiceDetail`)と`GET /api/services/{name}/stats`
-/// (CPU/メモリ使用量)を人間可読に整形して表示する。`GET /api/services/{name}/health`は
-/// 呼ばない — `HealthResponse`が返す`health_status`/`last_health_check_at`は
-/// `ServiceDetail`(サービス全体・コンテナ別とも)に既に含まれる完全な重複情報のため。
-/// 2回に分けて呼ぶと、その間に状態が変わって不整合な表示になる恐れもある。
+/// (CPU/メモリ使用量)を人間可読に整形して表示する。ヘルス情報専用のエンドポイントは
+/// 存在しない — `health_status`/`last_health_check_at`は`ServiceDetail`
+/// (サービス全体・コンテナ別とも)に既に含まれているため。
 pub async fn status(client: &ApiClient, name: &str, json: bool) -> Result<(), String> {
     let detail_raw: Value = client.get(&format!("/api/services/{name}")).await?;
     let stats_raw: Value = client.get(&format!("/api/services/{name}/stats")).await?;

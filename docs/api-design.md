@@ -324,23 +324,6 @@ Docker操作が失敗した場合は`status: "error"`とあわせて`last_error`
 
 **レスポンス**: `200 OK`、ボディは更新後の`ServiceDetail`
 
-### `GET /api/services/{id_or_name}/health`
-
-**レスポンス**: `200 OK`
-
-```ts
-{
-  health_status: "unknown" | "healthy" | "unhealthy",   // 集約値
-  last_health_check_at: string | null,
-  containers: {
-    id: number,
-    name: string,
-    health_status: "unknown" | "healthy" | "unhealthy",
-    last_health_check_at: string | null,
-  }[]
-}
-```
-
 ### `GET /api/services/{id_or_name}/stats`
 
 **レスポンス**: `200 OK`(`status != "running"`のサービスに対しては`containers: []`を返す)

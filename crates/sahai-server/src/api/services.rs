@@ -156,42 +156,6 @@ pub async fn restart(
 }
 
 #[derive(Serialize)]
-struct HealthResponse {
-    health_status: crate::domain::HealthStatus,
-    last_health_check_at: Option<String>,
-    containers: Vec<ContainerHealthDto>,
-}
-
-#[derive(Serialize)]
-struct ContainerHealthDto {
-    id: i64,
-    name: String,
-    health_status: crate::domain::HealthStatus,
-    last_health_check_at: Option<String>,
-}
-
-pub async fn health(
-    State(state): State<AppState>,
-    Path(id_or_name): Path<String>,
-) -> Result<impl IntoResponse, AppError> {
-    let detail = service::load_detail(&state, &id_or_name).await?;
-    Ok(Json(HealthResponse {
-        health_status: detail.service.health_status,
-        last_health_check_at: detail.service.last_health_check_at,
-        containers: detail
-            .containers
-            .into_iter()
-            .map(|c| ContainerHealthDto {
-                id: c.container.id,
-                name: c.container.name,
-                health_status: c.container.health_status,
-                last_health_check_at: c.container.last_health_check_at,
-            })
-            .collect(),
-    }))
-}
-
-#[derive(Serialize)]
 struct StatsResponse {
     containers: Vec<ContainerStatsDto>,
 }

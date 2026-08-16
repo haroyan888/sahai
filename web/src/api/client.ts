@@ -5,7 +5,6 @@ import type {
   ApiErrorField,
   CreateServiceRequest,
   DnsConfig,
-  HealthResponse,
   LogLine,
   RegistryConfig,
   RegistryStatusResponse,
@@ -124,7 +123,6 @@ export interface ApiClient {
   startService(idOrName: string): Promise<ServiceDetail>
   stopService(idOrName: string): Promise<ServiceDetail>
   restartService(idOrName: string): Promise<ServiceDetail>
-  getHealth(idOrName: string): Promise<HealthResponse>
   getStats(idOrName: string): Promise<StatsResponse>
   getRegistryStatus(idOrName: string): Promise<RegistryStatusResponse>
   /** 接続が切れる(signalのabort・コンテナ消滅)まで解決しない。 */
@@ -198,9 +196,6 @@ export function createApiClient(config: ApiClientConfig): ApiClient {
     },
     async restartService(idOrName: string) {
       return (await request<ServiceDetail>(`/api/services/${idOrName}/restart`, { method: 'POST' }))!
-    },
-    async getHealth(idOrName: string) {
-      return (await request<HealthResponse>(`/api/services/${idOrName}/health`, { method: 'GET' }))!
     },
     async getStats(idOrName: string) {
       return (await request<StatsResponse>(`/api/services/${idOrName}/stats`, { method: 'GET' }))!

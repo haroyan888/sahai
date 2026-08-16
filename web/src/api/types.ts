@@ -90,19 +90,6 @@ export interface UpdateServiceRequest {
   containers?: ContainerInput[]
 }
 
-export interface ContainerHealth {
-  id: number
-  name: string
-  health_status: HealthStatus
-  last_health_check_at: string | null
-}
-
-export interface HealthResponse {
-  health_status: HealthStatus
-  last_health_check_at: string | null
-  containers: ContainerHealth[]
-}
-
 export interface ContainerStats {
   id: number
   name: string

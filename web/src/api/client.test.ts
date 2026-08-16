@@ -156,22 +156,6 @@ describe('createApiClient', () => {
     },
   )
 
-  it('getHealth: GET /api/services/{id_or_name}/health を叩く', async () => {
-    const fetchMock = vi.mocked(fetch)
-    fetchMock.mockResolvedValueOnce(
-      jsonResponse({ health_status: 'healthy', last_health_check_at: null, containers: [] }),
-    )
-
-    const client = createApiClient({ baseUrl: BASE_URL, token: TOKEN })
-    const health = await client.getHealth('myapp')
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      `${BASE_URL}/api/services/myapp/health`,
-      expect.objectContaining({ method: 'GET' }),
-    )
-    expect(health.health_status).toBe('healthy')
-  })
-
   it('getStats: GET /api/services/{id_or_name}/stats を叩く', async () => {
     const fetchMock = vi.mocked(fetch)
     fetchMock.mockResolvedValueOnce(jsonResponse({ containers: [] }))
