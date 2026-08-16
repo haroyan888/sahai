@@ -61,7 +61,6 @@ pub fn router(state: AppState) -> Router {
             "/api/services/{id_or_name}/restart",
             post(services::restart),
         )
-        .route("/api/services/{id_or_name}/health", get(services::health))
         .route("/api/services/{id_or_name}/stats", get(services::stats))
         .route("/api/services/{id_or_name}/logs", get(services::logs))
         .route(

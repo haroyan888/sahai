@@ -352,7 +352,7 @@ sequenceDiagram
     end
 ```
 
-Web UIはこのDB更新結果を数秒間隔のポーリング(`GET /api/services`または`.../health`)で取得するだけで、Health Task を直接呼び出すことはない。
+Web UIはこのDB更新結果を数秒間隔のポーリング(`GET /api/services`または`GET /api/services/{id_or_name}`。いずれも`health_status`/`last_health_check_at`を含む)で取得するだけで、Health Task を直接呼び出すことはない。
 
 ## 9. 実サービスへのアクセス(参考: 通常のHTTPリクエスト経路)
 

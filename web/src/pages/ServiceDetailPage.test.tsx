@@ -52,7 +52,6 @@ function mockClient(overrides: Partial<ApiClient> = {}): ApiClient {
     startService: vi.fn().mockResolvedValue(detail({ status: 'running' })),
     stopService: vi.fn().mockResolvedValue(detail({ status: 'stopped' })),
     restartService: vi.fn().mockResolvedValue(detail({ status: 'running' })),
-    getHealth: vi.fn().mockResolvedValue({ health_status: 'unknown', last_health_check_at: null, containers: [] }),
     getStats: vi.fn().mockResolvedValue({ containers: [] }),
     getRegistryStatus: vi.fn().mockResolvedValue({ containers: [] }),
     streamLogs: vi.fn().mockResolvedValue(undefined),
@@ -321,13 +320,22 @@ describe('ServiceDetailPage', () => {
   })
 
   describe('ヘルス/統計情報の表示(優先度低)', () => {
-    it('コンテナごとのヘルス詳細(getHealthの結果)を表示する', async () => {
+    it('コンテナごとのヘルス詳細(ServiceDetailに含まれる値)を表示する', async () => {
       const client = mockClient({
-        getHealth: vi.fn().mockResolvedValue({
-          health_status: 'healthy',
-          last_health_check_at: '2026-01-01T00:00:00.000Z',
-          containers: [{ id: 10, name: 'myapp', health_status: 'unhealthy', last_health_check_at: null }],
-        }),
+        getService: vi.fn().mockResolvedValue(
+          detail({
+            containers: [
+              {
+                id: 10,
+                name: 'myapp',
+                health_status: 'unhealthy',
+                last_health_check_at: null,
+                ports: [{ id: 100, container_port: 80, host_port: 20001, protocol: 'tcp', is_http: true }],
+                volumes: [{ id: 200, container_path: '/data' }],
+              },
+            ],
+          }),
+        ),
       })
       render(<ServiceDetailPage client={client} idOrName="myapp" />)
 
@@ -337,7 +345,6 @@ describe('ServiceDetailPage', () => {
           'unhealthy',
         )
       })
-      expect(client.getHealth).toHaveBeenCalledWith('myapp')
     })
 
     it('コンテナごとのCPU/メモリ使用量(getStatsの結果)を単位付きで表示する', async () => {
@@ -376,9 +383,8 @@ describe('ServiceDetailPage', () => {
       expect(client.getRegistryStatus).toHaveBeenCalledWith('myapp')
     })
 
-    it('ヘルス/統計情報の取得に失敗しても詳細画面自体はcrashしない', async () => {
+    it('統計情報の取得に失敗しても詳細画面自体はcrashしない', async () => {
       const client = mockClient({
-        getHealth: vi.fn().mockRejectedValue(new Error('boom')),
         getStats: vi.fn().mockRejectedValue(new Error('boom')),
       })
       render(<ServiceDetailPage client={client} idOrName="myapp" />)
@@ -527,16 +533,14 @@ describe('ServiceDetailPage', () => {
       expect(client.getService).toHaveBeenCalledTimes(2)
     })
 
-    it('数秒ごとにgetHealth/getStatsを再取得する', async () => {
+    it('数秒ごとにgetStatsを再取得する', async () => {
       const client = mockClient()
       render(<ServiceDetailPage client={client} idOrName="myapp" />)
 
       await vi.advanceTimersByTimeAsync(0)
-      expect(client.getHealth).toHaveBeenCalledTimes(1)
       expect(client.getStats).toHaveBeenCalledTimes(1)
 
       await vi.advanceTimersByTimeAsync(5000)
-      expect(client.getHealth).toHaveBeenCalledTimes(2)
       expect(client.getStats).toHaveBeenCalledTimes(2)
     })
 

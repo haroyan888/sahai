@@ -29,7 +29,6 @@ function mockClient(overrides: Partial<ApiClient> = {}): ApiClient {
     startService: vi.fn(),
     stopService: vi.fn(),
     restartService: vi.fn(),
-    getHealth: vi.fn(),
     getStats: vi.fn(),
     getRegistryStatus: vi.fn(),
     streamLogs: vi.fn().mockResolvedValue(undefined),

@@ -11,7 +11,6 @@ import { ChevronDown, MoreVertical, Pencil, Play, RotateCw, Settings2, Square, T
 import type { ApiClient } from '../api/client'
 import type {
   ContainerInput,
-  HealthResponse,
   RegistryStatusResponse,
   ServiceDetail,
   StatsResponse,
@@ -64,7 +63,6 @@ export function ServiceDetailPage({ client, idOrName, onDeleted }: ServiceDetail
   // 結果が反映されるまでの間、処理中であることが分かるよう表示・操作を無効化する
   const [actionInProgress, setActionInProgress] = useState<'start' | 'stop' | 'restart' | null>(null)
 
-  const [health, setHealth] = useState<HealthResponse | null>(null)
   const [stats, setStats] = useState<StatsResponse | null>(null)
   const [registryStatus, setRegistryStatus] = useState<RegistryStatusResponse | null>(null)
 
@@ -90,15 +88,12 @@ export function ServiceDetailPage({ client, idOrName, onDeleted }: ServiceDetail
   }, [])
   usePolling(fetchDetail, POLL_INTERVAL_MS, resetDetail)
 
-  // ヘルス/統計情報は補助的な表示のため、失敗しても詳細画面自体は表示し続ける
-  const fetchHealthAndStats = useCallback(
+  // 統計・レジストリ情報は補助的な表示のため、失敗しても詳細画面自体は表示し続ける。
+  // ヘルス情報はfetchDetail(getService)が返すServiceDetailに既に含まれているため、
+  // ここで別途取得しない(以前は/healthを別途叩いていたが、ServiceDetailと完全に
+  // 重複するAPI呼び出しだったため廃止した)
+  const fetchStatsAndRegistry = useCallback(
     (isCancelled: () => boolean) => {
-      client
-        .getHealth(idOrName)
-        .then((result) => {
-          if (!isCancelled()) setHealth(result)
-        })
-        .catch(() => {})
       client
         .getStats(idOrName)
         .then((result) => {
@@ -114,12 +109,11 @@ export function ServiceDetailPage({ client, idOrName, onDeleted }: ServiceDetail
     },
     [client, idOrName],
   )
-  const resetHealthAndStats = useCallback(() => {
-    setHealth(null)
+  const resetStatsAndRegistry = useCallback(() => {
     setStats(null)
     setRegistryStatus(null)
   }, [])
-  usePolling(fetchHealthAndStats, POLL_INTERVAL_MS, resetHealthAndStats)
+  usePolling(fetchStatsAndRegistry, POLL_INTERVAL_MS, resetStatsAndRegistry)
 
   if (error) {
     return <p className="alert">取得に失敗しました</p>
@@ -310,7 +304,6 @@ export function ServiceDetailPage({ client, idOrName, onDeleted }: ServiceDetail
         </div>
         <div className="stack">
           {detail.containers.map((container) => {
-            const containerHealth = health?.containers.find((c) => c.id === container.id)
             const containerStats = stats?.containers.find((c) => c.id === container.id)
             const containerRegistry = registryStatus?.containers.find((c) => c.id === container.id)
             return (
@@ -318,11 +311,9 @@ export function ServiceDetailPage({ client, idOrName, onDeleted }: ServiceDetail
                 <summary className="row row--between">
                   <span className="row" style={{ gap: 'var(--space-2)' }}>
                     <strong>コンテナ: {container.name}</strong>
-                    {containerHealth && (
-                      <span data-testid={`container-health-${container.id}`}>
-                        <HealthBadge health={containerHealth.health_status} dotOnly />
-                      </span>
-                    )}
+                    <span data-testid={`container-health-${container.id}`}>
+                      <HealthBadge health={container.health_status} dotOnly />
+                    </span>
                   </span>
                   <ChevronDown className="subcard-chevron" size={16} aria-hidden="true" />
                 </summary>
