@@ -50,7 +50,9 @@ struct ContainerDto {
 #[derive(Deserialize)]
 struct PortDto {
     container_port: i64,
-    host_port: i64,
+    /// is_httpのポートはホストに公開しないためサーバー側で`null`になる
+    /// (サーバー側`domain::ServicePort::host_port`は`Option<i64>`)。
+    host_port: Option<i64>,
     protocol: String,
     is_http: bool,
 }
@@ -212,10 +214,13 @@ fn format_ports(ports: &[PortDto]) -> String {
         .iter()
         .map(|p| {
             let suffix = if p.is_http { "(http)" } else { "" };
-            format!(
-                "{}->{}/{}{suffix}",
-                p.host_port, p.container_port, p.protocol
-            )
+            // host_portが無い(ホスト非公開)ポートは"->"の左辺を省いて表示する
+            match p.host_port {
+                Some(host_port) => {
+                    format!("{host_port}->{}/{}{suffix}", p.container_port, p.protocol)
+                }
+                None => format!("{}/{}{suffix}", p.container_port, p.protocol),
+            }
         })
         .collect::<Vec<_>>()
         .join(", ")
@@ -508,7 +513,7 @@ mod tests {
                 "myapp",
                 vec![PortDto {
                     container_port: 80,
-                    host_port: 20001,
+                    host_port: Some(20001),
                     protocol: "tcp".to_string(),
                     is_http: true,
                 }],
@@ -541,13 +546,13 @@ mod tests {
                 vec![
                     PortDto {
                         container_port: 80,
-                        host_port: 20001,
+                        host_port: Some(20001),
                         protocol: "tcp".to_string(),
                         is_http: true,
                     },
                     PortDto {
                         container_port: 81,
-                        host_port: 20002,
+                        host_port: Some(20002),
                         protocol: "udp".to_string(),
                         is_http: false,
                     },
@@ -567,6 +572,35 @@ mod tests {
         let out = format_status(&detail, &stats);
         assert!(out.contains("20001->80/tcp(http), 20002->81/udp"), "{out}");
         assert!(out.contains("/data/a, /data/b"), "{out}");
+    }
+
+    #[test]
+    fn format_status_omits_host_port_for_ports_not_published_to_host() {
+        // is_httpのポートはホストに公開しないため、サーバーはhost_port: nullを返す
+        let detail = detail_fixture(
+            vec![container_fixture(
+                "app",
+                vec![
+                    PortDto {
+                        container_port: 80,
+                        host_port: None,
+                        protocol: "tcp".to_string(),
+                        is_http: true,
+                    },
+                    PortDto {
+                        container_port: 3306,
+                        host_port: Some(20001),
+                        protocol: "tcp".to_string(),
+                        is_http: false,
+                    },
+                ],
+                vec![],
+            )],
+            None,
+        );
+        let stats = StatsDto { containers: vec![] };
+        let out = format_status(&detail, &stats);
+        assert!(out.contains("80/tcp(http), 20001->3306/tcp"), "{out}");
     }
 
     // --- format_lifecycle_result ---
